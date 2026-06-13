@@ -468,6 +468,45 @@ class TestOrphanLogMergePass(_SealHelpersTestBase):
             "SELECT COUNT(*) FROM mover_errors").fetchone()[0]
         self.assertEqual(n, 0)
 
+    def test_non_matching_filename_skipped(self):
+        # Discriminating test: a valid past-day log sits alongside two
+        # non-log files.  The pass must backfill a snapshots row for the
+        # real log (proving it processes valid entries) and ignore the
+        # non-matching files (the regex-miss `continue`).  If the regex
+        # were broadened to match everything, the junk files would error
+        # or produce spurious rows and this would fail.
+        Path(self.log_dir, 'not-a-log.txt').write_text('x', encoding='utf-8')
+        Path(self.log_dir, 'browser-visits-host.log').write_text('x', encoding='utf-8')
+        Path(self.log_dir, snapshot_mover._log_filename_for(self.date)).write_text(
+            'real', encoding='utf-8')
+        with patch.object(snapshot_mover, '_today_utc',
+                          return_value=datetime.date(2099, 1, 1)):
+            snapshot_mover._orphan_log_merge_pass(self.conn)
+        rows = self.conn.execute(
+            "SELECT date FROM snapshots ORDER BY date").fetchall()
+        # Exactly the valid past-day log produced a row; junk ignored.
+        self.assertEqual(rows, [(self.date,)])
+
+    def test_today_and_future_logs_skipped(self):
+        # Discriminating test: a past-day log plus today's and a future
+        # day's log.  Only the past-day log should be backfilled — the
+        # date>=today `continue` skips the others (they're still being
+        # written).  If the comparison were inverted, today/future would
+        # be processed and this assertion would fail.
+        past = self.date  # 2024-01-15, well before the patched today
+        Path(self.log_dir, snapshot_mover._log_filename_for(past)).write_text(
+            'p', encoding='utf-8')
+        for d in ('2099-01-01', '2099-02-02'):  # today and future
+            Path(self.log_dir, snapshot_mover._log_filename_for(d)).write_text(
+                'x', encoding='utf-8')
+        with patch.object(snapshot_mover, '_today_utc',
+                          return_value=datetime.date(2099, 1, 1)):
+            snapshot_mover._orphan_log_merge_pass(self.conn)
+        rows = self.conn.execute(
+            "SELECT date FROM snapshots ORDER BY date").fetchall()
+        # Only the past day was reconciled.
+        self.assertEqual(rows, [(past,)])
+
     def test_race_orphan_appended_into_icloud_log_and_unlinked(self):
         # Set up: an iCloud log file already exists for a past date,
         # AND a fresh orphan with the same date sits in LOG_DIR.  The

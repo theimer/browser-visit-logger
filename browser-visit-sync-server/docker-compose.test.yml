@@ -1,0 +1,61 @@
+# Integration-test stack.
+#
+# Brings up the gRPC server with mTLS using test-only certs minted by
+# test/gen-certs.sh.  The test driver runs on the host (Mac) and
+# connects to localhost:50443, which the container maps to its
+# internal 50443.  See test/README.md for `make test-integration`.
+
+services:
+  sync-server:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    image: bvl-sync-server:test
+    ports:
+      - "50443:50443"
+    volumes:
+      - ./test/certs:/certs:ro
+      - bvl-state:/var/lib/browser-visit-sync
+    command:
+      - "--listen=:50443"
+      - "--log-root=/var/lib/browser-visit-sync/logs"
+      - "--db=/var/lib/browser-visit-sync/browser-visits.db"
+      - "--enrolled=/var/lib/browser-visit-sync/enrolled_machines.db"
+      - "--tls-cert=/certs/server.crt"
+      - "--tls-key=/certs/server.key"
+      - "--tls-client-ca=/certs/ca.crt"
+    depends_on:
+      - seed
+    healthcheck:
+      # gRPC has no HTTP, so we just check the listening socket exists.
+      test: ["CMD", "/usr/local/bin/sync-server", "--help"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  # One-shot init container that copies the pre-seeded
+  # enrolled_machines.db onto the shared volume before the server
+  # starts.  The host writes test/enrolled_machines.db via
+  # test/seed-enrolled.py.
+  seed:
+    image: alpine:3.20
+    volumes:
+      - ./test/state:/seed:ro
+      - bvl-state:/var/lib/browser-visit-sync
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        mkdir -p /var/lib/browser-visit-sync
+        cp /seed/enrolled_machines.db /var/lib/browser-visit-sync/enrolled_machines.db
+        # Wipe any leftover state from a previous run so each test
+        # session starts from an empty canonical DB.
+        rm -f /var/lib/browser-visit-sync/browser-visits.db \
+              /var/lib/browser-visit-sync/browser-visits.db-wal \
+              /var/lib/browser-visit-sync/browser-visits.db-shm
+        rm -rf /var/lib/browser-visit-sync/logs
+        chown -R 65532:65532 /var/lib/browser-visit-sync || true
+
+volumes:
+  bvl-state:

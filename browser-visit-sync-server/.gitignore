@@ -1,0 +1,10 @@
+bin/
+gen/
+go.sum
+*.db
+*.crt
+*.key
+test/.venv/
+test/certs/
+test/state/
+.pytest_cache/

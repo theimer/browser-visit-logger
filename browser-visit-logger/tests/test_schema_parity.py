@@ -153,7 +153,7 @@ class TestSchemaParity(unittest.TestCase):
         # schema.sql.  Catches drift where someone adds a new Swift
         # table but forgets schema.sql.
         expected = {'visits', 'read_events', 'skimmed_events',
-                    'snapshots', 'mover_errors'}
+                    'snapshots', 'mover_errors', 'sync_state'}
         self.assertEqual(expected, set(self.sql_schema['tables']))
 
 

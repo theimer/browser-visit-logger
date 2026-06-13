@@ -45,6 +45,22 @@ public enum Schema {
         """)
     }
 
+    /// Create the sync_state table if absent.  One row per laptop the
+    /// VM has told us about (including this laptop).  See schema.sql
+    /// for column semantics.
+    public static func ensureSyncStateTable(_ db: Database) throws {
+        try db.execute("""
+            CREATE TABLE IF NOT EXISTS sync_state (
+                machine_id            TEXT PRIMARY KEY,
+                cursor_log_date       TEXT NOT NULL DEFAULT '',
+                cursor_line_offset    INTEGER NOT NULL DEFAULT 0,
+                last_sync_attempt_at  TEXT NOT NULL DEFAULT '',
+                last_sync_success_at  TEXT NOT NULL DEFAULT '',
+                last_error            TEXT NOT NULL DEFAULT ''
+            )
+        """)
+    }
+
     /// Create the mover_errors table if absent.
     public static func ensureMoverErrorsTable(_ db: Database) throws {
         try db.execute("""

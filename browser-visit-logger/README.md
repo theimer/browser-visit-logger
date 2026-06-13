@@ -6,7 +6,10 @@ pages of interest from a popup, and archives full-page snapshots (MHTML
 or PDF) into iCloud-synced daily folders sealed by a tab-delimited
 manifest once each day has passed.
 
-Everything runs locally on your machine. Nothing is sent anywhere.
+Everything runs locally by default.  An **optional multi-laptop sync
+mode** ([covered below](#multi-laptop-sync-mode)) layers a gRPC
+client on top so several laptops can share state via a central EC2
+service; with multi-laptop mode disabled, nothing is sent anywhere.
 
 ---
 
@@ -60,7 +63,11 @@ clicking Allow grants it for the lifetime of the app's signature.
 | `~/Library/Application Support/browser-visit-logger/BrowserVisitLoggerHost.app/` | Code-signed app bundle wrapping the Swift `BVLHost` Mach-O binary (Chrome's native-messaging host) |
 | `~/Library/Application Support/browser-visit-logger/BrowserVisitLoggerVerifier.app/` | Code-signed app bundle wrapping the Swift `BVLVerifier` Mach-O binary (daily background agent) |
 | `~/Downloads/browser-visit-snapshots/` | Chrome's drop point — `BVLHost` archives files away on every tag, the verifier sweeps stragglers daily |
-| `~/Documents/browser-visit-logger/snapshots/<YYYY-MM-DD>/` | Sealed daily archive: read-only snapshot files + read-only `MANIFEST.tsv` + read-only `browser-visits-<YYYY-MM-DD>.log` |
+| `~/Documents/browser-visit-logger/snapshots/<YYYY-MM-DD>/` | Sealed daily archive: read-only snapshot files + read-only `MANIFEST.tsv` + read-only `browser-visits-<YYYY-MM-DD>.log` (single-laptop default; multi-laptop mode points the archive at Google Drive instead) |
+| `~/.browser-visit-logger/config.json` | Machine config (multi-laptop mode only).  Records `machine_id` + optional `sync_server` endpoint.  Presence of this file is what gates the sync hook in `BVLHost` |
+| `~/.browser-visit-logger/tls/` | mTLS material (multi-laptop mode only): `client.crt`, `client.key`, `server-ca.crt` |
+| `~/.browser-visit-logger/sync.lock` | flock acquired by `sync_client.py` so back-to-back Chrome events don't spawn overlapping syncs |
+| `~/browser-visits-peers/<machine_id>/browser-visits-<YYYY-MM-DD>.log` | Local mirror of peer machines' logs, written by `sync_client.py` on pull |
 
 All paths can be overridden via `BVL_*` environment variables — see
 [Configuration](#configuration).
@@ -94,8 +101,8 @@ snapshots (
 
 mover_errors (
     key        TEXT PRIMARY KEY,               -- '<op>:<target>'
-    operation  TEXT NOT NULL,                  -- 'move'|'seal'|'rewrite_manifest'|'top_level'
-    target     TEXT NOT NULL,                  -- file path / date dir
+    operation  TEXT NOT NULL,                  -- 'move'|'seal'|'rewrite_manifest'|'top_level'|'sync_push'|'sync_pull'|'sync_handshake'
+    target     TEXT NOT NULL,                  -- file path / date dir / VM endpoint
     message    TEXT NOT NULL,                  -- last exception message
     first_seen TEXT NOT NULL,
     last_seen  TEXT NOT NULL,
@@ -103,7 +110,23 @@ mover_errors (
     notified   INTEGER NOT NULL DEFAULT 0,
     immediate  INTEGER NOT NULL DEFAULT 0
 )
+
+sync_state (                                   -- multi-laptop mode only
+    machine_id            TEXT PRIMARY KEY,    -- this laptop or any peer
+    cursor_log_date       TEXT NOT NULL DEFAULT '',
+    cursor_line_offset    INTEGER NOT NULL DEFAULT 0,
+    last_sync_attempt_at  TEXT NOT NULL DEFAULT '',
+    last_sync_success_at  TEXT NOT NULL DEFAULT '',
+    last_error            TEXT NOT NULL DEFAULT ''
+)
 ```
+
+`sync_state` holds one row per machine the VM has told us about
+(including this laptop).  The cursor is the high-water mark of log
+records produced by `machine_id` that this laptop has confirmed are
+at the VM — for the self row, "successfully pushed and acked"; for
+peer rows, "successfully pulled and applied locally".  See
+[Multi-laptop sync mode](#multi-laptop-sync-mode).
 
 The `visits` / `*_events` tables are owned by `BVLHost`; the `snapshots`
 and `mover_errors` tables are co-owned by `BVLHost` and `BVLVerifier`.
@@ -562,6 +585,87 @@ for the full design.
 
 ---
 
+## Multi-laptop sync mode
+
+Optional layer that lets several laptops share their browsing state
+through a central gRPC service ([`browser-visit-sync-server/`](../browser-visit-sync-server/))
+running on an EC2 Linux VM.  Each laptop's local DB and local logs
+continue to work exactly as in single-laptop mode; the sync layer
+just makes the local DB converge to the union of every laptop's
+activity within ~1 minute of any interaction.
+
+**How to turn it on:**
+
+1. Set up the sync server on EC2 (see
+   [`browser-visit-sync-server/README.md`](../browser-visit-sync-server/README.md)).
+2. Mint a client cert for this laptop, signed by the same CA the
+   server trusts.  Drop `client.crt`, `client.key`, and
+   `server-ca.crt` into `~/.browser-visit-logger/tls/` (mode 0600).
+3. Run [`browser-visit-tools/install_laptop.sh`](../browser-visit-tools/install_laptop.sh).
+   It removes the legacy verifier LaunchAgent (verification lives on
+   the VM now), re-runs the upstream `install.sh`, and writes
+   `~/.browser-visit-logger/config.json` with this laptop's
+   `machine_id` (derived from `scutil --get LocalHostName`) and the
+   sync-server endpoint.
+4. On the VM, enroll the laptop:
+   ```
+   python3 enroll_machine.py --db enrolled_machines.db \
+     --machine-id <id-printed-by-install_laptop.sh> --cert client.crt
+   ```
+5. (Optional) migrate the historical iCloud snapshot archive into
+   Google Drive with
+   [`browser-visit-tools/migrate_icloud_to_gdrive.py`](../browser-visit-tools/migrate_icloud_to_gdrive.py).
+6. Trigger any Chrome → extension interaction.  The Swift host
+   responds to Chrome, then fork-detaches `sync_client.py`; the
+   first run pushes any backlog and pulls peer history.
+
+**How sync runs:**
+
+`BVLHost` (the Chrome native-messaging host) checks for
+`~/.browser-visit-logger/config.json` right after writing its
+response to Chrome.  If present, it `/bin/sh -c 'nohup python3
+sync_client.py … &'` — fork+detach so Chrome isn't blocked on the
+network round-trip.  `sync_client.py` itself:
+
+1. Acquires `~/.browser-visit-logger/sync.lock` (flock) — drops out
+   immediately if another sync is already running.
+2. Reads `sync_state.last_sync_attempt_at` for this machine_id;
+   skips if within `BVL_SYNC_INTERVAL_SECONDS` (default 60).
+3. Bumps `last_sync_attempt_at`.
+4. Walks local log files past the self cursor and `PushLogs` them
+   to the server in batches of 500 lines.  Advances the self cursor
+   on each ack.
+5. Sends every `sync_state` row to the server as a `PeerCursor`;
+   server streams every peer's lines past those cursors.  For each
+   returned chunk: append to `~/browser-visits-peers/<peer>/…log`
+   and replay into the local DB via the same code path BVLHost uses
+   for local events.  Bump each peer's cursor.
+6. Records failures into `mover_errors` keyed by `(sync_push |
+   sync_pull | sync_handshake, <endpoint>)` so the existing
+   threshold-based escalation (Notification Center via the verifier
+   pattern) surfaces persistent breakage to the user.
+
+**What the laptop side no longer does in multi-laptop mode:**
+
+- The `snapshot_verifier` LaunchAgent is not installed (and
+  `install_laptop.sh` removes any leftover from a single-laptop
+  install).  Sealing, manifest verification, and cross-day
+  reconciliation all run on the VM now.
+- The synchronous archive in `BVLHost`'s tag path still moves
+  files from `~/Downloads/browser-visit-snapshots/` to the archive
+  dir — but the archive dir defaults to a Google Drive mount path
+  instead of iCloud Documents.  Drive sync ferries the files to
+  the VM.
+
+**Falling back to single-laptop mode:**
+
+Delete `~/.browser-visit-logger/config.json`.  `BVLHost` will skip
+the sync spawn immediately on its next invocation.  The local DB +
+local logs + local snapshot archive are unchanged and remain
+authoritative.
+
+---
+
 ## When something goes wrong
 
 Both `host.py` (synchronous archive at tag time) and the verifier
@@ -682,29 +786,65 @@ env vars; env vars override defaults.
 | `BVL_VERIFIER_LOG` | `~/browser-visits-verifier.log` | reset (verifier writes via LaunchAgent stdout/stderr) |
 | `BVL_DB_FILE` | `~/browser-visits.db` | host, verifier, sealer, rebuilder, reset |
 | `BVL_DOWNLOADS_SNAPSHOTS_DIR` | `~/Downloads/browser-visit-snapshots` | host (synchronous archive source), verifier (sweep source), reset |
-| `BVL_ICLOUD_SNAPSHOTS_DIR` | `~/Documents/browser-visit-logger/snapshots` | host, verifier, sealer, rebuilder |
+| `BVL_GDRIVE_SNAPSHOTS_DIR` | `~/Library/CloudStorage/GoogleDrive/My Drive/browser-visit-logger/snapshots` | host (multi-laptop archive destination); preferred over the legacy name below |
+| `BVL_ICLOUD_SNAPSHOTS_DIR` | (same default as above, when `BVL_GDRIVE_SNAPSHOTS_DIR` unset) | host, verifier, sealer, rebuilder — alias retained for backwards compat |
 | `BVL_MOVER_MIN_AGE_SECONDS` | `60` | verifier (sweep age threshold) |
-| `BVL_MOVER_ERROR_THRESHOLD` | `3` | verifier (consecutive failures before persistent-error notification) |
+| `BVL_MOVER_ERROR_THRESHOLD` | `3` | verifier + sync_client (consecutive failures before persistent-error notification) |
+| `BVL_CONFIG_DIR` | `~/.browser-visit-logger` | host, sync_client (machine config + mTLS dir) |
+| `BVL_PEER_LOGS_DIR` | `~/browser-visits-peers` | sync_client (local mirror of pulled peer logs) |
+| `BVL_SYNC_SERVER` | (from `config.json`) | sync_client (override the configured endpoint) |
+| `BVL_SYNC_INTERVAL_SECONDS` | `60` | sync_client (debounce — minimum gap between successive sync attempts) |
+| `BVL_MACHINE_ID` | (from `config.json`) | host, sync_client (override the sanitised hostname; mainly for tests + recovery) |
+| `BVL_SYNC_CLIENT_SCRIPT` | (bundled path, else dev fallback) | host (path to `sync_client.py`; override for tests) |
+| `BVL_PYTHON` | `python3` | host (interpreter used to spawn `sync_client.py`) |
 
 ---
 
 ## Development
 
-```bash
-# Python tests (host, mover, sealer)
-pip install -r requirements-test.txt
-python3 -m pytest tests/ -v
+A `Makefile` wraps the test suites.  The Python target builds a
+throwaway virtualenv under `.venv-test/` on first run (gitignored) and
+installs `requirements-test.txt` into it, so the host's system Python
+is never touched:
 
-# Coverage report
-python3 -m pytest tests/ --cov=native-host --cov-report=term-missing
+```bash
+# Python tests (host, mover, sealer, sync_client) — venv auto-created,
+# gated at 100% line coverage (--cov-fail-under=100)
+make test-py
 
 # JS tests (background, popup) with coverage
-npm install
-npm test -- --coverage
+make test-js
+
+# Both
+make test
+
+# Build the Swift release binaries (needed by the shell wrappers and
+# the Swift-dependent paths); there is no XCTest target — see below
+make swift
 ```
 
-The full suite is 165 Python + 115 JS tests, with 100% line/branch
-coverage on every shipped module.
+The full suite is **225 Python + 131 JS tests, 100% line/branch
+coverage** on every shipped module (including `sync_client.py`).  Each
+Makefile Python target enforces the 100% floor, so a coverage
+regression fails the build.
+
+**Test isolation / production-data safety.** Tests never read or write
+real user data.  Every test routes its file/DB I/O to a temp dir
+(`tmp_path` / `tempfile`), and `tests/conftest.py` additionally forces
+all `BVL_*` paths to a throwaway sandbox *before* any module import —
+so even a test that forgets to isolate falls back to the sandbox, never
+`~`.  (`setdefault` is used, so an intentionally exported `BVL_*` value
+still wins.)
+
+> **macOS note:** this Python build redirects bytecode caching via
+> `sys.pycache_prefix` to `~/Library/Caches/com.apple.python/`.  If you
+> ever hand-edit a `native-host/*.py` and see a stale result, clear that
+> cache dir — `__pycache__` won't be next to the source.
+
+There is no Swift unit-test target (XCTest isn't available with the
+standalone Command Line Tools).  The Swift code paths are covered
+indirectly by the Python suite (same DB schema + on-disk artifacts) and
+by `install.sh`'s end-to-end native-messaging smoke test.
 
 ### Project layout
 
@@ -727,17 +867,20 @@ browser-visit-logger/
 │   ├── snapshot_mover.py                   # Seal / orphan-merge helpers used by sealer
 │   ├── snapshot_sealer.py                  # Manual sealer CLI (Python)
 │   ├── visits_rebuilder.py                 # DB rebuilder (log replay + FS rehydrate)
+│   ├── sync_client.py                      # Multi-laptop sync subprocess (gRPC push/pull)
 │   ├── com.browser.visit.logger.json       # Chrome native-messaging manifest template
 │   └── com.browser.visit.logger.snapshot_verifier.plist.template
-├── tests/                                  # Python (pytest) + JS (jest)
+├── tests/                                  # Python (pytest) + JS (jest); conftest.py sandboxes BVL_* paths
 ├── install.sh                              # Builds Swift binaries, materializes & signs .app bundles
+├── Makefile                                # test-py / test-js / test / swift / venv targets
 ├── reset.py
 ├── seal_snapshot_directory                 # Bash wrapper → snapshot_sealer.py
 ├── verify_snapshot_directory               # Bash wrapper → swift/.build/release/BVLVerifier
 ├── reset_visits_data                       # Bash wrapper → reset.py
 ├── rebuild_visits_data                     # Bash wrapper → visits_rebuilder.py
 ├── package.json                            # JS test deps + jest config
-└── requirements-test.txt                   # Python test deps
+├── requirements-test.txt                   # Python test deps
+└── .venv-test/                             # test virtualenv (gitignored, auto-created by `make test-py`)
 ```
 
 On macOS, `install.sh` additionally materializes:

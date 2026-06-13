@@ -77,6 +77,61 @@ func recordToDict(_ record: VisitRecord) -> [String: Any] {
 
 let validTags: Set<String> = ["of_interest", "read", "skimmed"]
 
+// MARK: - sync spawn
+
+/// Opportunistic background sync: if the laptop is configured for the
+/// multi-machine setup, fork a detached `sync_client.py`.  Caller must
+/// invoke this AFTER writing the native-messaging response to stdout
+/// (we don't want to delay Chrome).
+func maybeSpawnSync() {
+    let configPath = Paths.machineConfigFile
+    guard FileManager.default.fileExists(atPath: configPath) else { return }
+
+    let scriptPath: String
+    if let override = ProcessInfo.processInfo.environment["BVL_SYNC_CLIENT_SCRIPT"] {
+        scriptPath = override
+    } else {
+        scriptPath = defaultSyncClientPath()
+    }
+    guard FileManager.default.fileExists(atPath: scriptPath) else {
+        log.debug("sync_client.py not found at \(scriptPath); skipping spawn")
+        return
+    }
+
+    let python = ProcessInfo.processInfo.environment["BVL_PYTHON"] ?? "python3"
+    let escaped = scriptPath.replacingOccurrences(of: "'", with: "'\\''")
+    let cmd = "nohup \(python) '\(escaped)' >/dev/null 2>&1 &"
+    let proc = Process()
+    proc.launchPath = "/bin/sh"
+    proc.arguments = ["-c", cmd]
+    proc.standardInput = FileHandle.nullDevice
+    proc.standardOutput = FileHandle.nullDevice
+    proc.standardError = FileHandle.nullDevice
+    do {
+        try proc.run()
+        // The `&` inside the /bin/sh backgrounded sync_client.py; this
+        // proc exits quickly on its own.
+    } catch {
+        log.error("Failed to spawn sync_client: \(error)")
+    }
+}
+
+/// Bundle layout (install.sh):
+///   .../BrowserVisitLoggerHost.app/Contents/MacOS/BVLHost
+///   .../BrowserVisitLoggerHost.app/Contents/Resources/native-host/sync_client.py
+func defaultSyncClientPath() -> String {
+    let arg0 = CommandLine.arguments[0]
+    let macosDir = (arg0 as NSString).deletingLastPathComponent
+    let contents = (macosDir as NSString).deletingLastPathComponent
+    let bundleScript = (contents as NSString)
+        .appendingPathComponent("Resources/native-host/sync_client.py")
+    if FileManager.default.fileExists(atPath: bundleScript) {
+        return bundleScript
+    }
+    return (Paths.home as NSString)
+        .appendingPathComponent("projects/browser-visit-logger/native-host/sync_client.py")
+}
+
 // MARK: - Main
 
 let message: [String: Any]
@@ -206,4 +261,10 @@ if errors.isEmpty {
 } else {
     writeError(errors)
 }
+
+// Opportunistic background sync: if the laptop is configured for the
+// multi-machine setup, fork a detached sync_client.py.  Already-sent
+// response means Chrome isn't blocked on this.
+maybeSpawnSync()
+
 exit(0)

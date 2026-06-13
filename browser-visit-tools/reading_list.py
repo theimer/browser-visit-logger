@@ -47,7 +47,11 @@ import sys
 
 HOME    = os.path.expanduser('~')
 DB_FILE = os.environ.get('BVL_DB_FILE', os.path.join(HOME, 'browser-visits.db'))
-_OUTPUT_DIR = os.path.join(HOME, 'Documents', 'browser-visit-logger')
+# Output dir is env-overridable (BVL_OUTPUT_DIR) so the default write
+# target can be redirected away from ~/Documents — used by the test
+# suite's sandbox net, and handy for ad-hoc runs.  --output still wins.
+_OUTPUT_DIR = os.environ.get(
+    'BVL_OUTPUT_DIR', os.path.join(HOME, 'Documents', 'browser-visit-logger'))
 _FORMATS = ('html', 'markdown')
 _DEFAULT_FORMAT = 'html'
 _EXTENSIONS = {'html': 'html', 'markdown': 'md'}
