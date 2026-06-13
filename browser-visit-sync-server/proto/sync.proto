@@ -1,0 +1,66 @@
+syntax = "proto3";
+
+package bvl.sync.v1;
+
+option go_package = "github.com/theimer/browser-visit-logger/browser-visit-sync-server/gen/syncpb;syncpb";
+
+// BrowserVisitSync is the gRPC service exposed by the EC2 VM to laptops
+// running BVLSync. Authentication is mTLS: the client cert CN must
+// equal the machine_id present in each request.
+service BrowserVisitSync {
+  // Append log lines to the VM's mirror of the caller's log files and
+  // replay them into the canonical DB.
+  rpc PushLogs (PushLogsRequest) returns (PushLogsResponse);
+
+  // Stream log lines from every peer machine the caller hasn't fully
+  // synced yet, based on the per-peer cursors the caller supplies.
+  rpc PullLogs (PullLogsRequest) returns (stream LogChunk);
+
+  // Stream a transactionally-consistent SQLite snapshot of the VM's
+  // canonical DB (`VACUUM INTO` server-side). Used by the db_diff tool.
+  rpc ExportDbSnapshot (ExportDbSnapshotRequest) returns (stream DbSnapshotChunk);
+}
+
+// One TSV line as written on the originating laptop, plus enough
+// metadata to address it uniquely.
+message LogLine {
+  string date = 1;          // 'YYYY-MM-DD' UTC bucket the line belongs to.
+  int64 line_offset = 2;    // 0-based monotonic offset within (machine_id, date).
+  string raw_line = 3;      // Exact TSV line, without trailing newline.
+}
+
+message PushLogsRequest {
+  string machine_id = 1;             // Sender machine_id. Cross-checked against mTLS CN.
+  repeated LogLine lines = 2;
+}
+
+message PushLogsResponse {
+  // High-water mark the server now has for the caller, after applying
+  // this batch. Client uses it to advance its self-cursor.
+  string accepted_date = 1;
+  int64 accepted_line_offset = 2;
+}
+
+message PeerCursor {
+  string peer_machine_id = 1;
+  string date = 2;          // Highest fully-pulled date.
+  int64 line_offset = 3;    // Highest fully-pulled offset within that date.
+}
+
+message PullLogsRequest {
+  string machine_id = 1;             // Caller. Self-records won't be echoed back.
+  repeated PeerCursor cursors = 2;   // One per peer the caller knows about. Missing peers default to (date='', offset=0).
+}
+
+message LogChunk {
+  string peer_machine_id = 1;
+  repeated LogLine lines = 2;
+}
+
+message ExportDbSnapshotRequest {
+  string machine_id = 1;
+}
+
+message DbSnapshotChunk {
+  bytes data = 1;
+}

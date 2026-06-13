@@ -1,0 +1,26 @@
+[Unit]
+Description=Browser Visit Sync gRPC server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bvlsync
+Group=bvlsync
+ExecStart=/usr/local/bin/sync-server \
+  --listen :50443 \
+  --log-root /var/lib/browser-visit-sync/logs \
+  --db /var/lib/browser-visit-sync/browser-visits.db \
+  --enrolled /var/lib/browser-visit-sync/enrolled_machines.db \
+  --tls-cert /etc/browser-visit-sync/server.crt \
+  --tls-key /etc/browser-visit-sync/server.key \
+  --tls-client-ca /etc/browser-visit-sync/clients-ca.crt
+Restart=on-failure
+RestartSec=5s
+ProtectSystem=strict
+ReadWritePaths=/var/lib/browser-visit-sync
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -31,7 +31,12 @@ class _SealerTestBase(unittest.TestCase):
 
         self.dest_dir = os.path.join(self.tmp.name, 'icloud')
         self.db_file  = os.path.join(self.tmp.name, 'visits.db')
+        # Distinct from any 'logs' dir individual tests create for their
+        # own LOG_DIR patching — this one only exists to keep the
+        # default orphan-merge scan away from the developer's $HOME.
+        self.log_dir  = os.path.join(self.tmp.name, 'home-logs-isolated')
         os.makedirs(self.dest_dir)
+        os.makedirs(self.log_dir)
 
         # Initialize DB schema so sealing has somewhere to look up rows.
         # The snapshots table is owned by snapshot_mover, not host.
@@ -40,12 +45,17 @@ class _SealerTestBase(unittest.TestCase):
         snapshot_mover._ensure_snapshots_table(conn)
         conn.close()
 
-        # Save and later restore snapshot_mover module-level state that the
-        # sealer's CLI mutates (--db / --dest / --verbose).
+        # Save and later restore snapshot_mover module-level state.  The
+        # sealer's CLI mutates DB_FILE / ICLOUD_SNAPSHOTS_DIR (--db /
+        # --dest); LOG_DIR has no CLI flag and defaults to $HOME, so the
+        # orphan-log merge pass would otherwise scan the developer's real
+        # home dir and pull in live `browser-visits-<date>.log` files.
+        # Pin it to an isolated empty dir so seals stay hermetic.
         self._saved = {
             name: getattr(snapshot_mover, name)
-            for name in ('ICLOUD_SNAPSHOTS_DIR', 'DB_FILE')
+            for name in ('ICLOUD_SNAPSHOTS_DIR', 'DB_FILE', 'LOG_DIR')
         }
+        snapshot_mover.LOG_DIR = self.log_dir
         self._saved_log_level = snapshot_mover.logger.level
         self.addCleanup(self._restore)
 

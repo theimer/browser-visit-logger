@@ -60,3 +60,20 @@ CREATE TABLE IF NOT EXISTS mover_errors (
     notified   INTEGER NOT NULL DEFAULT 0,
     immediate  INTEGER NOT NULL DEFAULT 0
 );
+
+-- Per-peer sync cursors. One row per laptop the VM has told us about
+-- (including this laptop). The cursor is the high-water mark of log
+-- records produced by machine_id that this laptop has confirmed are
+-- present at the VM:
+--   * Row whose machine_id == our own: how far through our local log
+--     we've successfully pushed and the VM has acked.
+--   * Other rows: how far through that peer's log we've pulled and
+--     applied locally.
+CREATE TABLE IF NOT EXISTS sync_state (
+    machine_id            TEXT PRIMARY KEY,
+    cursor_log_date       TEXT NOT NULL DEFAULT '',
+    cursor_line_offset    INTEGER NOT NULL DEFAULT 0,
+    last_sync_attempt_at  TEXT NOT NULL DEFAULT '',
+    last_sync_success_at  TEXT NOT NULL DEFAULT '',
+    last_error            TEXT NOT NULL DEFAULT ''
+);
