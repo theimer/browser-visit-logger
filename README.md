@@ -16,9 +16,6 @@ The setup can run in either of two modes:
   Each laptop's local DB converges to the union of all laptops'
   activity within ~1 minute of any interaction.
 
-The architecture is described in detail in
-[plans/i-want-to-be-witty-nygaard.md](.claude/plans/i-want-to-be-witty-nygaard.md).
-
 ## [`browser-visit-logger/`](browser-visit-logger/)
 
 The Chrome extension and macOS native-messaging host that records
