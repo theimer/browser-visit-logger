@@ -14,6 +14,10 @@ into two groups:
   the multi-laptop architecture (see the top-level
   [README](../README.md) and
   [`browser-visit-sync-server/`](../browser-visit-sync-server/)).
+- **EC2 VM management** — `manage_vm.py`, `manage_sync_server.py`
+  (with the internal `_bvl_aws.py` helper).  Create and operate the
+  EC2 VM that hosts the sync-server, and remotely manage the server
+  process over AWS SSM (no SSH).  Need `boto3` and AWS credentials.
 
 ## CLI scripts
 
@@ -35,6 +39,9 @@ one-line wrapper note before delegating.
 | `migrate_icloud_to_gdrive.py` | (Python, no wrapper) | One-time iCloud → Google Drive snapshot migration |
 | `install_laptop.sh` | (Bash) | Laptop install for multi-laptop mode |
 | `uninstall_laptop_legacy.sh` | (Bash) | Remove legacy verifier LaunchAgent |
+| `manage_vm.py` | (Python, no wrapper) | Create / start / stop / status / terminate the EC2 VM |
+| `manage_sync_server.py` | (Python, no wrapper) | Provision / deploy / control / health-check the sync-server over SSM |
+| `_bvl_aws.py` | (internal) | Shared boto3 / SSM / S3 helpers — not a CLI entrypoint |
 
 ### `generate_reading_list`
 
@@ -240,6 +247,111 @@ bash uninstall_laptop_legacy.sh
 `install_laptop.sh` runs this script as its first step, so most
 users never invoke it directly.
 
+### `manage_vm.py`
+
+Creates and manages the EC2 VM that hosts the sync-server.  Talks to
+AWS via `boto3`; credentials come from the ambient chain (env / shared
+config / SSO).  Idempotency keys on the tags
+`bvl:role=sync-server` / `bvl:managed-by=browser-visit-tools` — `create`
+looks for an existing tagged, non-terminated instance before launching
+a new one, so re-running is safe.  It also find-or-creates the
+security group (gRPC port `50443` ingress only — **no SSH**) and an IAM
+instance profile carrying `AmazonSSMManagedInstanceCore` so the VM is
+reachable over SSM.
+
+State (region, instance id, arch, …) is persisted to
+`~/.browser-visit-logger/vm.json`; every subcommand loads it and falls
+back to tag-discovery if it's missing or stale.
+
+| Subcommand | Effect |
+|---|---|
+| `create` | Idempotently create the VM + SG + IAM profile |
+| `start` / `stop` / `reboot` | Lifecycle control |
+| `status` | Print state, type, public address |
+| `terminate` | Terminate the instance (`--purge-infra` also deletes the shared SG + role) |
+
+```bash
+# Create (the only required flag is the CIDR allowed to reach the gRPC port)
+python3 manage_vm.py create --allow-cidr 203.0.113.7/32
+
+# Pick arch / size / region (arch must match the deployed binary)
+python3 manage_vm.py create --allow-cidr 203.0.113.7/32 \
+    --region us-west-2 --arch arm64 --instance-type t4g.small --volume-size 30
+
+python3 manage_vm.py status
+python3 manage_vm.py stop
+python3 manage_vm.py terminate --purge-infra
+```
+
+`create` flags: `--allow-cidr CIDR` (required, repeatable), `--region`,
+`--instance-type`, `--volume-size` (GiB, default 20),
+`--arch {x86_64,arm64}` (default `x86_64`), `--ami` (override the
+resolved Amazon Linux 2023 AMI).  Exit codes: 0 ok, 1 AWS/operation
+failure, 2 usage.
+
+### `manage_sync_server.py`
+
+Provisions, deploys, and operates the sync-server **process** on the
+VM, entirely over AWS SSM `SendCommand` (no SSH, no open port 22).
+Resolves the instance the same way `manage_vm.py` does, waits for the
+SSM agent to report `Online`, then runs the relevant shell over
+`AWS-RunShellScript`.
+
+The cross-compiled binary and the systemd unit / TLS material are
+staged through a private, per-account S3 bucket
+(`bvl-sync-deploy-<account>-<region>`, 7-day expiry lifecycle; TLS
+objects are written with SSE) which the VM pulls from via its instance
+profile — SSM's ~100 KB command-parameter cap can't carry the ~20 MB
+binary inline.
+
+Build the Linux binary first:
+
+```bash
+make -C ../browser-visit-sync-server build-linux GOARCH=amd64   # or arm64
+```
+
+| Subcommand | Effect |
+|---|---|
+| `provision` | Create the `bvlsync` user + data dirs, install the systemd unit and TLS material, `systemctl enable` (idempotent) |
+| `deploy` | Stage the binary → S3 → `/usr/local/bin/sync-server`, restart |
+| `start` / `stop` / `restart` | `systemctl` control |
+| `status` | `systemctl is-active` + `status` |
+| `logs` | `journalctl` **snapshot** (`--lines`, `--since`); for a live tail use `aws ssm start-session` |
+| `health` | service active + gRPC port answers + disk under 90 % |
+
+```bash
+# First-boot setup (TLS material passed as local PEM paths)
+python3 manage_sync_server.py provision \
+    --server-cert server.crt --server-key server.key \
+    --clients-ca clients-ca.crt
+
+# Install the binary and start
+python3 manage_sync_server.py deploy \
+    --binary ../browser-visit-sync-server/bin/sync-server-linux-amd64
+python3 manage_sync_server.py start
+python3 manage_sync_server.py health
+python3 manage_sync_server.py logs --lines 50
+```
+
+`provision --and-deploy --binary <path>` chains a deploy after
+provisioning.  `deploy` refuses a binary whose arch token doesn't match
+the VM's recorded arch unless you pass `--force`.  Exit codes: 0 ok,
+1 remote/AWS failure, 2 usage.
+
+#### Prerequisites
+
+`boto3` (`pip install boto3`) and AWS credentials with, at minimum:
+
+- EC2: `ec2:RunInstances`, `*Instances`, security-group create/authorize/delete,
+  `ec2:DescribeImages`/`DescribeInstances`
+- IAM: `iam:CreateRole`, `AttachRolePolicy`, `PutRolePolicy`,
+  `CreateInstanceProfile`, `AddRoleToInstanceProfile`, and **`iam:PassRole`**
+  (RunInstances fails confusingly without it)
+- SSM: `ssm:SendCommand`, `GetCommandInvocation`,
+  `DescribeInstanceInformation`, `GetParameter`
+- S3: full access to the `bvl-sync-deploy-*` bucket
+- STS: `sts:GetCallerIdentity`
+
 ## Development
 
 A `Makefile` builds a throwaway virtualenv under `.venv-test/`
@@ -251,17 +363,21 @@ make test          # venv + pytest, --cov-fail-under=100 across all modules
 make clean-venv    # rebuild the venv after editing requirements-test.txt
 ```
 
-**85 tests, 100% line coverage** across every shipped module:
-`reading_list.py`, `db_diff.py`, `fetch_vm_snapshot.py`,
-`enroll_machine.py`, `migrate_icloud_to_gdrive.py`.  These standalone
-unit tests are in addition to the end-to-end exercise the sync tools
-get from the integration suite under
+**100% line coverage** across every shipped module: `reading_list.py`,
+`db_diff.py`, `fetch_vm_snapshot.py`, `enroll_machine.py`,
+`migrate_icloud_to_gdrive.py`, `_bvl_aws.py`, `manage_vm.py`,
+`manage_sync_server.py`.  These standalone unit tests are in addition
+to the end-to-end exercise the sync tools get from the integration
+suite under
 [`browser-visit-sync-server/test/`](../browser-visit-sync-server/test/).
 
 Test deps: `pytest`, `pytest-cov`, and `cryptography` (the last only
 because `enroll_machine.py`'s PEM-cert path uses it and the tests
-exercise that path).  `fetch_vm_snapshot.py`'s gRPC dependency is
-*faked* in tests, so `grpcio` is not required to run them.
+exercise that path).  `fetch_vm_snapshot.py`'s gRPC dependency and the
+`boto3` used by the EC2-management tools are both *faked* in tests
+(every AWS call routes through the single `_bvl_aws.client` seam and
+hand-rolled recording fakes), so neither `grpcio` nor `boto3` is
+required to run the suite — and neither is in `requirements-test.txt`.
 
 **Production-data safety.** `reading_list.py` is the only tool with
 `~`-rooted defaults (`BVL_DB_FILE` to read, `BVL_OUTPUT_DIR` to write);
@@ -281,14 +397,20 @@ browser-visit-tools/
 ├── migrate_icloud_to_gdrive.py     # one-time archive migration
 ├── install_laptop.sh               # multi-laptop laptop install
 ├── uninstall_laptop_legacy.sh      # remove legacy verifier LaunchAgent
+├── manage_vm.py                    # EC2 VM lifecycle (boto3)
+├── manage_sync_server.py           # sync-server ops over SSM
+├── _bvl_aws.py                     # shared boto3 / SSM / S3 helpers
 ├── Makefile                        # venv + test (gated at 100% coverage)
 ├── tests/
-│   ├── conftest.py                 # sandboxes BVL_DB_FILE / BVL_OUTPUT_DIR
+│   ├── conftest.py                 # sandboxes BVL_DB_FILE / BVL_OUTPUT_DIR / BVL_VM_STATE_FILE
 │   ├── test_reading_list.py
 │   ├── test_db_diff.py
 │   ├── test_enroll_machine.py
 │   ├── test_fetch_vm_snapshot.py
-│   └── test_migrate.py
+│   ├── test_migrate.py
+│   ├── test_bvl_aws.py
+│   ├── test_manage_vm.py
+│   └── test_manage_sync_server.py
 ├── requirements-test.txt
 ├── .venv-test/                     # test virtualenv (gitignored, auto-created)
 └── README.md

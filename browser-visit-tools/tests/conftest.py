@@ -28,6 +28,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 _SANDBOX = tempfile.mkdtemp(prefix='bvl-tools-test-sandbox-')
 os.environ.setdefault('BVL_DB_FILE', os.path.join(_SANDBOX, 'browser-visits.db'))
 os.environ.setdefault('BVL_OUTPUT_DIR', _SANDBOX)
+# manage_vm / manage_sync_server persist VM state to ~/.browser-visit-logger/
+# vm.json by default; pin it into the sandbox so tests never touch the real
+# file.  Individual tests override BVL_VM_STATE_FILE for their own scope.
+os.environ.setdefault('BVL_VM_STATE_FILE', os.path.join(_SANDBOX, 'vm.json'))
 
 os.environ['TZ'] = 'UTC'
 time.tzset()
