@@ -81,6 +81,15 @@ go mod tidy      # produces go.sum (also gitignored)
 make build       # → bin/sync-server
 ```
 
+To produce the stripped Linux binary the EC2 deploy tooling installs,
+cross-compile with `build-linux` (the SQLite driver is pure Go, so
+`CGO_ENABLED=0` works).  `GOARCH` must match the instance arch:
+
+```
+make build-linux GOARCH=amd64    # → bin/sync-server-linux-amd64  (t3/x86_64)
+make build-linux GOARCH=arm64    # → bin/sync-server-linux-arm64  (t4g/arm64)
+```
+
 Built and tested with Go 1.22+ (the module's `go` directive) — a
 current toolchain (e.g. Go 1.26) works fine.
 
@@ -137,6 +146,14 @@ pins the user to `bvlsync`, restarts on failure, and confines
 filesystem writes to `/var/lib/browser-visit-sync/`.  The Dockerfile
 at [`deploy/Dockerfile`](deploy/Dockerfile) is a multi-stage build
 that produces a distroless `nonroot` image (~20 MB).
+
+To create and operate the VM itself without doing any of this by hand,
+use [`browser-visit-tools/manage_vm.py`](../browser-visit-tools/README.md#manage_vmpy)
+(idempotent EC2 create) and
+[`manage_sync_server.py`](../browser-visit-tools/README.md#manage_sync_serverpy)
+— the latter provisions the `bvlsync` user + dirs, installs this unit
+and the TLS material, cross-deploys the `build-linux` binary, and
+controls the service, all over AWS SSM (no SSH).
 
 TLS floor is **TLS 1.2** — pragmatic interop with macOS-system
 Python 3.9 (LibreSSL 2.8.3) that doesn't speak TLS 1.3.  mTLS is the

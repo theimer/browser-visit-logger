@@ -1,4 +1,4 @@
-.PHONY: proto build test cover test-integration venv clean clean-venv
+.PHONY: proto build build-linux test cover test-integration venv clean clean-venv
 
 PROTO_DIR := proto
 GEN_DIR   := gen/syncpb
@@ -23,6 +23,16 @@ proto:
 
 build:
 	go build -o bin/sync-server ./cmd/sync-server
+
+# Cross-compile a stripped Linux binary for the EC2 VM.  CGO_ENABLED=0 is
+# safe because the SQLite driver (modernc.org/sqlite) is pure Go.  GOARCH
+# must match the instance arch chosen by manage_vm.py (amd64↔x86_64,
+# arm64↔arm64).  Consumed by ../browser-visit-tools/manage_sync_server.py.
+GOARCH ?= amd64
+build-linux:
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(GOARCH) \
+		go build -trimpath -ldflags="-s -w" \
+		-o bin/sync-server-linux-$(GOARCH) ./cmd/sync-server
 
 test:
 	go test ./...

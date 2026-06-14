@@ -60,6 +60,12 @@ Includes a full Docker Compose integration suite under
 see that directory's README for the venv + `make test-integration`
 workflow.
 
+The EC2 VM that hosts this service is created and managed by the
+`manage_vm.py` / `manage_sync_server.py` tools (below): the binary is
+cross-compiled (`make build-linux`), deployed as a systemd service, and
+the VM is reached entirely over AWS SSM — no SSH, no inbound port 22,
+only the gRPC port `50443` is open to enrolled laptops.
+
 ## [`browser-visit-tools/`](browser-visit-tools/)
 
 Standalone scripts that consume the database or operate on the
@@ -86,9 +92,14 @@ multi-laptop setup itself:
 - **`uninstall_laptop_legacy.sh`** — removes the legacy
   snapshot-verifier LaunchAgent (the verifier moves to the VM in
   multi-laptop mode).  Idempotent; never touches user data.
+- **`manage_vm.py`** — idempotently creates and operates the EC2 VM
+  (instance + security group + IAM instance profile) via `boto3`.
+- **`manage_sync_server.py`** — provisions, deploys, and controls the
+  sync-server on the VM over AWS SSM (no SSH).
 
 The read-only tools depend only on the DB schema; the sync-related
-tools depend on the gRPC stubs the sync-server emits.
+tools depend on the gRPC stubs the sync-server emits; the EC2 tools
+depend on `boto3` + AWS credentials.
 
 ## [`browser-visit-mcp/`](browser-visit-mcp/)
 
