@@ -155,7 +155,7 @@ never modified.
 |---|---|---|---|
 | `browser-visit-logger` (Python) | `make test-py` | python3 | 225 tests, 100% (gated) |
 | `browser-visit-logger` (JS) | `make test-js` | node/npm | 131 tests, 100% |
-| `browser-visit-tools` | `make test` | python3 | 85 tests, 100% (gated) |
+| `browser-visit-tools` | `make test` | python3 | 167 tests, 100% (gated) |
 | `browser-visit-sync-server` (Go unit) | `make cover` | go 1.22+, protoc | 94–100% per package¹ |
 | `browser-visit-sync-server` (integration) | `make test-integration` | Docker | 7 end-to-end tests |
 | `browser-visit-mcp` | `pytest` | python3 | see its README |
