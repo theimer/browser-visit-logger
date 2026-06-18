@@ -285,7 +285,9 @@ python3 manage_vm.py terminate --purge-infra
 
 `create` flags: `--allow-cidr CIDR` (required, repeatable), `--region`,
 `--instance-type`, `--volume-size` (GiB, default 20),
-`--arch {x86_64,arm64}` (default `x86_64`), `--ami` (override the
+`--arch {x86_64,arm64}` (default `arm64`/Graviton — cheaper, and the
+pure-Go server has no x86 dependency; the instance type follows the arch:
+`t4g.small` for arm64, `t3.small` for x86_64), `--ami` (override the
 resolved Amazon Linux 2023 AMI).  Exit codes: 0 ok, 1 AWS/operation
 failure, 2 usage.
 
@@ -351,6 +353,14 @@ the VM's recorded arch unless you pass `--force`.  Exit codes: 0 ok,
   `DescribeInstanceInformation`, `GetParameter`
 - S3: full access to the `bvl-sync-deploy-*` bucket
 - STS: `sts:GetCallerIdentity`
+
+These tools read the **ambient** boto3 credential chain (no `--profile` flag),
+so with AWS SSO you must `aws sso login` *and* `export AWS_PROFILE=<profile>`
+in the same shell. Note that `PowerUserAccess` lacks the IAM permissions above,
+so `manage_vm.py create` needs an admin-capable role. The end-to-end
+[multi-laptop setup runbook](../docs/MULTI_LAPTOP_SETUP.md#troubleshooting) has
+a Troubleshooting section covering the SSO sign-in, credential, IAM-denial, and
+`RunInstances` errors seen in practice, each with its fix.
 
 ## Development
 
