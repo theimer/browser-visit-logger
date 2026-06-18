@@ -31,6 +31,7 @@ Exit codes: 0 success, 1 AWS/operation failure, 2 usage.
 import argparse
 import json
 import sys
+import uuid
 
 import _bvl_aws as aws
 
@@ -182,7 +183,13 @@ def cmd_create(args):
             'Ebs': {'VolumeSize': args.volume_size, 'VolumeType': 'gp3'},
         }],
         TagSpecifications=[_tag_spec('instance')],
-        ClientToken=f'bvl-sync-server-{region or "default"}',
+        # Unique per invocation. A stable token would collide with EC2's
+        # ~24h idempotency cache when re-creating after a terminate (a
+        # different arch/type then fails with IdempotentParameterMismatch,
+        # an identical one silently returns the dead instance). Duplicate
+        # protection is the tag-based find-or-create guard above; the token
+        # only closes the rapid double-submit window within a single run.
+        ClientToken=f'bvl-sync-server-{region or "default"}-{uuid.uuid4()}',
     )
     instance_id = run['Instances'][0]['InstanceId']
     aws.save_state({'region': region, 'instance_id': instance_id,
@@ -282,11 +289,12 @@ def _build_parser():
                     metavar='CIDR',
                     help='CIDR allowed to reach the gRPC port (repeatable)')
     pc.add_argument('--instance-type',
-                    help='override the arch default (t3.small / t4g.small)')
+                    help='override the arch default (t4g.small / t3.small)')
     pc.add_argument('--volume-size', type=int, default=20,
                     help='root EBS size in GiB (default 20)')
-    pc.add_argument('--arch', choices=sorted(_ARCH), default='x86_64',
-                    help='instance/AMI arch; must match the deployed binary')
+    pc.add_argument('--arch', choices=sorted(_ARCH), default='arm64',
+                    help='instance/AMI arch (default arm64/Graviton); '
+                         'must match the deployed binary')
     pc.add_argument('--ami', help='override the resolved AL2023 AMI id')
 
     for name, helptext in (('start', 'start a stopped VM'),

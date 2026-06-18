@@ -222,8 +222,10 @@ def test_create_launches(monkeypatch, tmp_path, capsys):
     assert ebs['VolumeType'] == 'gp3' and ebs['VolumeSize'] == 20
     tags = run_kw['TagSpecifications'][0]['Tags']
     assert {'Key': 'bvl:role', 'Value': 'sync-server'} in tags
-    # deterministic ClientToken guards against a double-launch on retry
-    assert run_kw['ClientToken'] == 'bvl-sync-server-us-east-1'
+    # ClientToken is unique per invocation (region-prefixed + uuid) so a
+    # terminate-then-recreate never collides with EC2's idempotency cache.
+    assert run_kw['ClientToken'].startswith('bvl-sync-server-us-east-1-')
+    assert run_kw['ClientToken'] != 'bvl-sync-server-us-east-1'
     assert 'created i-new' in capsys.readouterr().out
 
 
@@ -344,3 +346,11 @@ def test_main_dispatch_create(monkeypatch, tmp_path):
 def test_parser_requires_allow_cidr():
     with pytest.raises(SystemExit):
         mv._build_parser().parse_args(['create'])
+
+
+def test_parser_default_arch_is_arm64():
+    # The recommended default is arm64/Graviton (cheaper; the pure-Go
+    # server has no x86 dependency).  A no-arch create lands on t4g.small.
+    args = mv._build_parser().parse_args(['create', '--allow-cidr', '1.2.3.4/32'])
+    assert args.arch == 'arm64'
+    assert mv._ARCH[args.arch][1] == 't4g.small'
