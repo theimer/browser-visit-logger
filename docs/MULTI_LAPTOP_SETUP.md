@@ -222,8 +222,10 @@ This writes `./certs/`:
 > `ca.key`.** `gen-certs.sh <machine-ids…>` begins with `rm -rf certs/` and
 > generates a **new CA every time** — re-running it to "add a laptop" would
 > invalidate the server cert and every existing laptop, forcing a full
-> re-provision. So mint your production material **once** and stash
-> `ca.crt`/`ca.key` somewhere safe. To **add a laptop later**, use the
+> re-provision. As a safety net, if a CA already exists the script **asks for
+> confirmation first** (and refuses outright when run non-interactively)
+> unless you pass `--force`. Still: mint your production material **once** and
+> stash `ca.crt`/`ca.key` somewhere safe. To **add a laptop later**, use the
 > non-destructive `--add-client` mode (next), not a fresh run.
 
 ### Adding a laptop later (incremental, no downtime)

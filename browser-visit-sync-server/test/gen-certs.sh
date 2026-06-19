@@ -4,8 +4,10 @@
 #
 # Used by the integration-test harness to set up mTLS without any
 # external infrastructure.  A normal (non --add-client) run is
-# destructive — the certs/ dir is wiped and a fresh CA is minted — so
-# the test starts from a known state every time.
+# destructive — the certs/ dir is wiped and a fresh CA is minted.  When a
+# CA already exists the script confirms first (or, non-interactively,
+# refuses) unless --force is given, so a stray re-run can't clobber a
+# production CA; the harness passes --force for its known-state re-runs.
 #
 # Usage:
 #   ./gen-certs.sh [--server-host HOST]... <machine-id>...   # full run
@@ -26,6 +28,13 @@
 #                        everything.  Requires certs/ca.crt + certs/ca.key
 #                        from the original run.  Cannot be combined with
 #                        --server-host or positional machine-ids.
+#
+#   --force              Skip the confirmation guard.  A full run wipes
+#                        certs/ and mints a NEW CA; when one already exists
+#                        the script asks before clobbering it (and refuses
+#                        outright when not attached to a terminal).  The
+#                        test harness passes --force for its known-state
+#                        re-runs.
 #
 # Examples:
 #   ./gen-certs.sh laptop-a laptop-b laptop-c rogue-client      # test harness
@@ -52,6 +61,7 @@ set -euo pipefail
 # unchanged when no flag is given.)
 SERVER_HOSTS=()
 ADD_CLIENTS=()
+FORCE=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --server-host)
@@ -64,6 +74,7 @@ while [ $# -gt 0 ]; do
             ADD_CLIENTS+=("$2"); shift 2 ;;
         --add-client=*)
             ADD_CLIENTS+=("${1#*=}"); shift ;;
+        --force) FORCE=1; shift ;;
         --) shift; break ;;
         -*) echo "error: unknown flag: $1" >&2; exit 2 ;;
         *) break ;;
@@ -123,6 +134,31 @@ fi
 # ----------------------------------------------------------------------
 # Full run: wipe, mint a fresh CA + server cert + the listed clients.
 # ----------------------------------------------------------------------
+
+# Guard: a full run wipes certs/ and mints a NEW CA. If one already exists,
+# confirm first so a stray re-run can't nuke a production CA (which would
+# invalidate the server cert and every enrolled laptop). --force skips this;
+# to add a laptop, use --add-client instead.
+if [ "$FORCE" != 1 ] && [ -f "$DIR/ca.crt" ]; then
+    if [ -t 0 ]; then
+        echo "A CA already exists at $DIR/ca.crt." >&2
+        echo "A full run WIPES certs/ and mints a NEW CA, invalidating the" >&2
+        echo "server cert and every enrolled laptop. To add a laptop instead," >&2
+        echo "cancel and use:  $0 --add-client <machine-id>" >&2
+        printf 'Really wipe certs/ and re-create everything? [y/N] ' >&2
+        read -r reply
+        case "$reply" in
+            y|Y|yes|YES) ;;
+            *) echo "aborted (nothing changed)." >&2; exit 1 ;;
+        esac
+    else
+        echo "error: $DIR/ca.crt already exists; refusing to wipe a CA "\
+"non-interactively. Pass --force to overwrite, or --add-client <id> to add a "\
+"laptop without re-issuing." >&2
+        exit 1
+    fi
+fi
+
 rm -rf "$DIR"
 mkdir -p "$DIR"
 cd "$DIR"
