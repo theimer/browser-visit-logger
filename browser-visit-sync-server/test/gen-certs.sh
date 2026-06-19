@@ -3,11 +3,13 @@
 # machine ID supplied on the command line, into ./certs/.
 #
 # Used by the integration-test harness to set up mTLS without any
-# external infrastructure.  Re-runs are destructive (the certs/ dir is
-# wiped) so the test starts from a known state every time.
+# external infrastructure.  A normal (non --add-client) run is
+# destructive — the certs/ dir is wiped and a fresh CA is minted — so
+# the test starts from a known state every time.
 #
 # Usage:
-#   ./gen-certs.sh [--server-host HOST]... <machine-id>...
+#   ./gen-certs.sh [--server-host HOST]... <machine-id>...   # full run
+#   ./gen-certs.sh --add-client <machine-id>...              # incremental
 #
 #   --server-host HOST   Add a real DNS name or IP to the server cert's
 #                        SAN so the cert is valid for a VM reachable at
@@ -16,10 +18,20 @@
 #                        Omit it for the integration tests — without it the
 #                        server cert is the original localhost-only cert.
 #
+#   --add-client ID      INCREMENTAL, NON-DESTRUCTIVE.  Sign one more
+#                        client cert with the EXISTING certs/ca.{crt,key}
+#                        without wiping certs/ or touching the CA / server
+#                        cert.  Repeatable.  This is how you add a laptop
+#                        later (e.g. a new machine) without re-issuing
+#                        everything.  Requires certs/ca.crt + certs/ca.key
+#                        from the original run.  Cannot be combined with
+#                        --server-host or positional machine-ids.
+#
 # Examples:
 #   ./gen-certs.sh laptop-a laptop-b laptop-c rogue-client      # test harness
 #   ./gen-certs.sh --server-host bvl-vm.example.com my-mbp      # production
 #   ./gen-certs.sh --server-host 203.0.113.7 my-mbp other-mbp   # by IP
+#   ./gen-certs.sh --add-client my-new-mbp                      # add a laptop
 #
 # Output:
 #   certs/ca.crt              CA cert (use as both server-CA and client-CA)
@@ -31,13 +43,15 @@
 #   certs/<id>.crt            Client cert (CN=<id>)
 #   certs/<id>.key            Client private key
 #   certs/<id>.sha256         SHA-256 of DER-encoded client cert
-#   certs/fingerprints.tsv    machine_id<TAB>cert_sha256
+#   certs/fingerprints.tsv    machine_id<TAB>cert_sha256 (appended in
+#                             --add-client mode, rewritten otherwise)
 set -euo pipefail
 
-# Parse leading --server-host flags; the rest are positional machine IDs.
-# (The test harness calls this with machine IDs only, so the default
-# output is unchanged when no flag is given.)
+# Parse leading flags; the rest are positional machine IDs.  (The test
+# harness calls this with machine IDs only, so the default output is
+# unchanged when no flag is given.)
 SERVER_HOSTS=()
+ADD_CLIENTS=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --server-host)
@@ -45,6 +59,11 @@ while [ $# -gt 0 ]; do
             SERVER_HOSTS+=("$2"); shift 2 ;;
         --server-host=*)
             SERVER_HOSTS+=("${1#*=}"); shift ;;
+        --add-client)
+            [ $# -ge 2 ] || { echo "error: --add-client needs a value" >&2; exit 2; }
+            ADD_CLIENTS+=("$2"); shift 2 ;;
+        --add-client=*)
+            ADD_CLIENTS+=("${1#*=}"); shift ;;
         --) shift; break ;;
         -*) echo "error: unknown flag: $1" >&2; exit 2 ;;
         *) break ;;
@@ -52,6 +71,58 @@ while [ $# -gt 0 ]; do
 done
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/certs"
+
+# Mint one client cert into the current directory (must hold ca.crt,
+# ca.key and client_ext.cnf).  Appends its fingerprint to fingerprints.tsv.
+# OpenSSL reuses ca.srl across calls, so -CAcreateserial is safe to repeat.
+mint_client() {
+    local id="$1" fp
+    openssl genrsa -out "${id}.key" 2048 2>/dev/null
+    openssl req -new -key "${id}.key" -subj "/CN=${id}" -out "${id}.csr"
+    openssl x509 -req -days 3650 -in "${id}.csr" -CA ca.crt -CAkey ca.key \
+      -CAcreateserial -extfile client_ext.cnf -extensions client_ext \
+      -out "${id}.crt" 2>/dev/null
+    rm "${id}.csr"
+    fp=$(openssl x509 -in "${id}.crt" -outform DER | openssl dgst -sha256 -hex | awk '{print $NF}')
+    echo "$fp" > "${id}.sha256"
+    printf '%s\t%s\n' "$id" "$fp" >> fingerprints.tsv
+    chmod 600 "${id}.key"
+}
+
+# OpenSSL 3.x rejects extfiles without a named section, so use a small
+# inline file with a [client_ext] block.
+CLIENT_EXT='[ client_ext ]
+extendedKeyUsage = clientAuth
+keyUsage = digitalSignature'
+
+# ----------------------------------------------------------------------
+# Incremental mode: add client cert(s) against the existing CA, leaving
+# certs/, the CA and the server cert untouched.
+# ----------------------------------------------------------------------
+if [ ${#ADD_CLIENTS[@]} -gt 0 ]; then
+    [ ${#SERVER_HOSTS[@]} -eq 0 ] || {
+        echo "error: --server-host is not valid with --add-client "\
+"(the server cert is not regenerated in incremental mode)" >&2; exit 2; }
+    [ $# -eq 0 ] || {
+        echo "error: positional machine-ids are not valid with --add-client" >&2
+        exit 2; }
+    [ -f "$DIR/ca.crt" ] && [ -f "$DIR/ca.key" ] || {
+        echo "error: --add-client needs an existing CA at $DIR/ca.{crt,key} "\
+"from the original run; none found" >&2; exit 2; }
+    cd "$DIR"
+    echo "$CLIENT_EXT" > client_ext.cnf
+    [ -f fingerprints.tsv ] || : > fingerprints.tsv
+    for id in "${ADD_CLIENTS[@]}"; do
+        mint_client "$id"
+        echo "added client cert ${id}.crt (signed by existing CA)"
+    done
+    rm client_ext.cnf
+    exit 0
+fi
+
+# ----------------------------------------------------------------------
+# Full run: wipe, mint a fresh CA + server cert + the listed clients.
+# ----------------------------------------------------------------------
 rm -rf "$DIR"
 mkdir -p "$DIR"
 cd "$DIR"
@@ -102,25 +173,10 @@ openssl x509 -req -days 3650 -in server.csr -CA ca.crt -CAkey ca.key \
 rm server.csr server.cnf
 
 # 3) Client certs
-# OpenSSL 3.x rejects extfiles without a named section, so use a small
-# inline file with a [client_ext] block.
-cat > client_ext.cnf <<'EOF'
-[ client_ext ]
-extendedKeyUsage = clientAuth
-keyUsage = digitalSignature
-EOF
-
+echo "$CLIENT_EXT" > client_ext.cnf
 : > fingerprints.tsv
 for id in "$@"; do
-    openssl genrsa -out "${id}.key" 2048 2>/dev/null
-    openssl req -new -key "${id}.key" -subj "/CN=${id}" -out "${id}.csr"
-    openssl x509 -req -days 3650 -in "${id}.csr" -CA ca.crt -CAkey ca.key \
-      -CAcreateserial -extfile client_ext.cnf -extensions client_ext \
-      -out "${id}.crt" 2>/dev/null
-    rm "${id}.csr"
-    fp=$(openssl x509 -in "${id}.crt" -outform DER | openssl dgst -sha256 -hex | awk '{print $NF}')
-    echo "$fp" > "${id}.sha256"
-    printf '%s\t%s\n' "$id" "$fp" >> fingerprints.tsv
+    mint_client "$id"
 done
 rm client_ext.cnf
 

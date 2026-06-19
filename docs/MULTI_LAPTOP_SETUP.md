@@ -181,27 +181,69 @@ One CA signs everything. The same `gen-certs.sh` the integration tests use
 takes a `--server-host` flag for production, so the server cert's SAN
 matches the real VM address.
 
+You supply exactly two things: the VM's stable endpoint and one
+machine-id per laptop.
+
 ```bash
 cd browser-visit-sync-server/test
 
-# Pass the VM's DNS name (or public IP) and one machine-id per laptop.
-# The machine-id MUST equal the laptop's sanitised LocalHostName — see Step 5.
+# --server-host: the VM's DNS name (or public IP) — goes into the server
+#   cert SAN so laptops can verify the server. Use a STABLE address (an
+#   Elastic IP or DNS name): a raw EC2 public address changes on stop/start
+#   and would no longer match the cert. Repeatable (pass a name AND an IP).
+# Positional args: one machine-id per laptop (see the constraint below).
 ./gen-certs.sh --server-host <vm-dns-or-ip> laptop-a laptop-b
 ```
+
+**The machine-id must equal that laptop's sanitised `LocalHostName`.** It
+becomes the cert's `CN`, and the server rejects any request whose claimed
+`machine_id` doesn't match the cert CN. Get a laptop's value by running this
+*on that laptop* before you mint its cert:
+
+```bash
+scutil --get LocalHostName | sed 's/[^A-Za-z0-9_-]/-/g; s/--*/-/g; s/^-//; s/-$//'
+```
+
+(Or run `install_laptop.sh` on it first — it prints `Machine ID: <id>` — then
+mint a cert with that exact CN.) The machine-id is the *only* per-laptop input
+you provide; the private keys are generated for you.
 
 This writes `./certs/`:
 
 | File | Goes to | Role |
 |---|---|---|
 | `ca.crt` | VM (as `clients-ca.crt`) **and** every laptop (as `server-ca.crt`) | Trust anchor for both directions |
-| `ca.key` | **nowhere — keep it offline and safe** | Signs all certs; the root of trust |
+| `ca.key` | **kept offline and safe** | Signs all certs; the root of trust — **you need it to add laptops later** |
 | `server.crt` / `server.key` | VM | Server identity (SAN includes your `--server-host`) |
 | `<id>.crt` / `<id>.key` | the matching laptop | That laptop's client identity (`CN=<id>`) |
 | `<id>.sha256`, `fingerprints.tsv` | (reference) | DER SHA-256 used at enrollment |
 
-> **Mint once.** Re-running `gen-certs.sh` wipes `certs/` and generates a new
-> CA, invalidating everything already deployed. Generate your production
-> material once and copy `ca.key` somewhere safe; re-run only to rotate.
+> **⚠️ A normal run mints a fresh CA. Run it once, then keep `ca.crt` +
+> `ca.key`.** `gen-certs.sh <machine-ids…>` begins with `rm -rf certs/` and
+> generates a **new CA every time** — re-running it to "add a laptop" would
+> invalidate the server cert and every existing laptop, forcing a full
+> re-provision. So mint your production material **once** and stash
+> `ca.crt`/`ca.key` somewhere safe. To **add a laptop later**, use the
+> non-destructive `--add-client` mode (next), not a fresh run.
+
+### Adding a laptop later (incremental, no downtime)
+
+When you buy a new machine, sign one more client cert against the **existing**
+CA — nothing already deployed changes, so there's no server redeploy and the
+other laptops are untouched. From the directory holding your saved
+`ca.crt` + `ca.key` (i.e. the original `certs/`):
+
+```bash
+cd browser-visit-sync-server/test          # where your saved certs/ lives
+./gen-certs.sh --add-client <new-machine-id>
+```
+
+`--add-client` reuses `certs/ca.{crt,key}`, leaves the CA + server cert alone,
+writes just `certs/<new-machine-id>.{crt,key,sha256}`, and appends to
+`fingerprints.tsv`. It refuses to run if there's no existing CA, or if combined
+with `--server-host` / positional ids. Then **enroll** the new cert (Step 4)
+and **install** on the new laptop (Step 5) — both are additive. The running
+server trusts the new cert the moment it's enrolled.
 
 ## Step 3 — Build, provision, and start the server
 
@@ -349,7 +391,7 @@ You can also diff a laptop against a fresh VM snapshot with
 | Ship a new binary | `make -C browser-visit-sync-server build-linux GOARCH=<arch>` then `manage_sync_server.py deploy --binary …` |
 | Stop / start the VM (save cost) | `python3 manage_vm.py stop` / `start` |
 | Tear it all down | `python3 manage_vm.py terminate --purge-infra` |
-| Add a laptop later | mint one more client cert (Step 2), enroll it (Step 4), `install_laptop.sh` on it (Step 5) |
+| Add a laptop later | `gen-certs.sh --add-client <id>` (incremental — see [Step 2](#adding-a-laptop-later-incremental-no-downtime)), enroll it (Step 4), `install_laptop.sh` on it (Step 5) |
 
 **Stopping the VM** keeps the data volume; its public address may change on
 restart — re-run `manage_vm.py status` and, if it changed, update each
