@@ -177,22 +177,25 @@ Two gotchas:
 
 ## Step 2 — Mint TLS material
 
-One CA signs everything. The same `gen-certs.sh` the integration tests use
-takes a `--server-host` flag for production, so the server cert's SAN
-matches the real VM address.
+One CA signs everything. Mint the production material with the
+`gen-prod-certs` wrapper, which writes to `~/.browser-visit-logger/ca/`
+(overridable via `BVL_CA_DIR`). It wraps the same `gen-certs.sh` the
+integration tests use, but pins the output **outside** `test/certs/` —
+which the test suite wipes — so a later `make test-integration` can't
+clobber your production CA.
 
 You supply exactly two things: the VM's stable endpoint and one
 machine-id per laptop.
 
 ```bash
-cd browser-visit-sync-server/test
+cd browser-visit-tools
 
 # --server-host: the VM's DNS name (or public IP) — goes into the server
 #   cert SAN so laptops can verify the server. Use a STABLE address (an
 #   Elastic IP or DNS name): a raw EC2 public address changes on stop/start
 #   and would no longer match the cert. Repeatable (pass a name AND an IP).
 # Positional args: one machine-id per laptop (see the constraint below).
-./gen-certs.sh --server-host <vm-dns-or-ip> laptop-a laptop-b
+./gen-prod-certs --server-host <vm-dns-or-ip> laptop-a laptop-b
 ```
 
 **The machine-id must equal that laptop's sanitised `LocalHostName`.** It
@@ -208,7 +211,7 @@ scutil --get LocalHostName | sed 's/[^A-Za-z0-9_-]/-/g; s/--*/-/g; s/^-//; s/-$/
 mint a cert with that exact CN.) The machine-id is the *only* per-laptop input
 you provide; the private keys are generated for you.
 
-This writes `./certs/`:
+This writes `~/.browser-visit-logger/ca/`:
 
 | File | Goes to | Role |
 |---|---|---|
@@ -219,33 +222,37 @@ This writes `./certs/`:
 | `<id>.sha256`, `fingerprints.tsv` | (reference) | DER SHA-256 used at enrollment |
 
 > **⚠️ A normal run mints a fresh CA. Run it once, then keep `ca.crt` +
-> `ca.key`.** `gen-certs.sh <machine-ids…>` begins with `rm -rf certs/` and
-> generates a **new CA every time** — re-running it to "add a laptop" would
-> invalidate the server cert and every existing laptop, forcing a full
-> re-provision. As a safety net, if a CA already exists the script **asks for
-> confirmation first** (and refuses outright when run non-interactively)
-> unless you pass `--force`. Still: mint your production material **once** and
-> stash `ca.crt`/`ca.key` somewhere safe. To **add a laptop later**, use the
-> non-destructive `--add-client` mode (next), not a fresh run.
+> `ca.key`.** A full mint begins by wiping the output dir and generates a
+> **new CA every time** — re-running it to "add a laptop" would invalidate the
+> server cert and every existing laptop, forcing a full re-provision. As a
+> safety net, if a CA already exists the script **asks for confirmation first**
+> (and refuses outright when run non-interactively) unless you pass `--force`.
+> Still: mint your production material **once** and keep
+> `~/.browser-visit-logger/ca/` (especially `ca.key`) safe. To **add a laptop
+> later**, use the non-destructive `--add-client` mode (next), not a fresh run.
+>
+> Do **not** mint production certs into `browser-visit-sync-server/test/certs/`
+> — `make test-integration` wipes that directory. `gen-prod-certs` keeps you
+> out of that trap by writing to `~/.browser-visit-logger/ca/`.
 
 ### Adding a laptop later (incremental, no downtime)
 
 When you buy a new machine, sign one more client cert against the **existing**
 CA — nothing already deployed changes, so there's no server redeploy and the
-other laptops are untouched. From the directory holding your saved
-`ca.crt` + `ca.key` (i.e. the original `certs/`):
+other laptops are untouched:
 
 ```bash
-cd browser-visit-sync-server/test          # where your saved certs/ lives
-./gen-certs.sh --add-client <new-machine-id>
+cd browser-visit-tools
+./gen-prod-certs --add-client <new-machine-id>
 ```
 
-`--add-client` reuses `certs/ca.{crt,key}`, leaves the CA + server cert alone,
-writes just `certs/<new-machine-id>.{crt,key,sha256}`, and appends to
-`fingerprints.tsv`. It refuses to run if there's no existing CA, or if combined
-with `--server-host` / positional ids. Then **enroll** the new cert (Step 4)
-and **install** on the new laptop (Step 5) — both are additive. The running
-server trusts the new cert the moment it's enrolled.
+`--add-client` reuses the saved `~/.browser-visit-logger/ca/ca.{crt,key}`,
+leaves the CA + server cert alone, writes just the new
+`<new-machine-id>.{crt,key,sha256}`, and appends to `fingerprints.tsv`. It
+refuses to run if there's no existing CA, or if combined with `--server-host` /
+positional ids. Then **enroll** the new cert (Step 4) and **install** on the
+new laptop (Step 5) — both are additive. The running server trusts the new
+cert the moment it's enrolled.
 
 ## Step 3 — Build, provision, and start the server
 
@@ -259,9 +266,9 @@ make -C browser-visit-sync-server build-linux GOARCH=arm64
 
 cd browser-visit-tools
 python3 manage_sync_server.py provision \
-    --server-cert ../browser-visit-sync-server/test/certs/server.crt \
-    --server-key  ../browser-visit-sync-server/test/certs/server.key \
-    --clients-ca  ../browser-visit-sync-server/test/certs/ca.crt \
+    --server-cert ~/.browser-visit-logger/ca/server.crt \
+    --server-key  ~/.browser-visit-logger/ca/server.key \
+    --clients-ca  ~/.browser-visit-logger/ca/ca.crt \
     --and-deploy  --binary ../browser-visit-sync-server/bin/sync-server-linux-arm64
 
 python3 manage_sync_server.py start
@@ -292,7 +299,7 @@ pip install cryptography     # enroll_machine.py needs it to read PEM certs
 for id in laptop-a laptop-b; do
     python3 enroll_machine.py --db ./enrolled_machines.db \
         --machine-id "$id" \
-        --cert ../browser-visit-sync-server/test/certs/$id.crt
+        --cert ~/.browser-visit-logger/ca/$id.crt
 done
 python3 enroll_machine.py --db ./enrolled_machines.db --list   # sanity-check
 
@@ -411,7 +418,7 @@ You can also diff a laptop against a fresh VM snapshot with
 | Ship a new binary | `make -C browser-visit-sync-server build-linux GOARCH=<arch>` then `manage_sync_server.py deploy --binary …` |
 | Stop / start the VM (save cost) | `python3 manage_vm.py stop` / `start` |
 | Tear it all down | `python3 manage_vm.py terminate --purge-infra` |
-| Add a laptop later | `gen-certs.sh --add-client <id>` (incremental — see [Step 2](#adding-a-laptop-later-incremental-no-downtime)), enroll it (Step 4), `install_laptop.sh` on it (Step 5) |
+| Add a laptop later | `gen-prod-certs --add-client <id>` (incremental — see [Step 2](#adding-a-laptop-later-incremental-no-downtime)), enroll it (Step 4), `install_laptop.sh` on it (Step 5) |
 
 **Stopping the VM** keeps the data volume; its public address may change on
 restart — re-run `manage_vm.py status` and, if it changed, update each

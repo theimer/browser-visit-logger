@@ -35,6 +35,7 @@ one-line wrapper note before delegating.
 | `./generate_reading_list` | `reading_list.py` | of_interest-but-unread → HTML or Markdown |
 | `db_diff.py` | (Python, no wrapper) | Diff two `browser-visits.db` files |
 | `fetch_vm_snapshot.py` | (Python, no wrapper) | Download a consistent VM DB snapshot via gRPC |
+| `gen-prod-certs` | `../browser-visit-sync-server/test/gen-certs.sh` | Mint production mTLS material into `~/.browser-visit-logger/ca/` |
 | `enroll_machine.py` | (Python, no wrapper) | VM-side admin: enroll a laptop's mTLS cert |
 | `migrate_icloud_to_gdrive.py` | (Python, no wrapper) | One-time iCloud → Google Drive snapshot migration |
 | `install_laptop.sh` | (Bash) | Laptop install for multi-laptop mode |
@@ -157,6 +158,25 @@ python3 fetch_vm_snapshot.py --server localhost:50051 \
     --machine-id laptop-a --insecure --out /tmp/vm.db \
     --client-cert /dev/null --client-key /dev/null --ca /dev/null
 ```
+
+### `gen-prod-certs`
+
+Thin wrapper over `browser-visit-sync-server/test/gen-certs.sh` that pins
+`--out-dir` to `~/.browser-visit-logger/ca/` (override with `BVL_CA_DIR`),
+so the production CA never lands in the throwaway `test/certs/` that
+`make test-integration` wipes.  All other flags pass straight through.
+
+```bash
+# First run: mint CA + server cert + one client cert per laptop
+./gen-prod-certs --server-host bvl-vm.example.com laptop-a laptop-b
+
+# Later: add one more laptop against the existing CA (non-destructive)
+./gen-prod-certs --add-client my-new-mbp
+```
+
+Keep the resulting `ca.key` safe — it's the root of trust and what you
+need to enrol more laptops later.  See the
+[setup runbook](../docs/MULTI_LAPTOP_SETUP.md#step-2--mint-tls-material).
 
 ### `enroll_machine.py`
 
@@ -403,6 +423,7 @@ browser-visit-tools/
 ├── generate_reading_list           # bash wrapper → reading_list.py
 ├── db_diff.py                      # diff two SQLite browser-visits DBs
 ├── fetch_vm_snapshot.py            # gRPC client → ExportDbSnapshot
+├── gen-prod-certs                  # wrap gen-certs.sh → ~/.browser-visit-logger/ca/
 ├── enroll_machine.py               # VM-side admin tool
 ├── migrate_icloud_to_gdrive.py     # one-time archive migration
 ├── install_laptop.sh               # multi-laptop laptop install

@@ -10,8 +10,15 @@
 # production CA; the harness passes --force for its known-state re-runs.
 #
 # Usage:
-#   ./gen-certs.sh [--server-host HOST]... <machine-id>...   # full run
-#   ./gen-certs.sh --add-client <machine-id>...              # incremental
+#   ./gen-certs.sh [--server-host HOST]... [--out-dir DIR] <machine-id>...
+#   ./gen-certs.sh --add-client [--out-dir DIR] <machine-id>...
+#
+#   --out-dir DIR        Where to read/write the cert hierarchy.  Defaults
+#                        to ./certs next to this script — which the test
+#                        harness WIPES on every run, so point production
+#                        material elsewhere (the `gen-prod-certs` wrapper
+#                        pins it to ~/.browser-visit-logger/ca).  A leading
+#                        ~/ is expanded; relative paths resolve against $PWD.
 #
 #   --server-host HOST   Add a real DNS name or IP to the server cert's
 #                        SAN so the cert is valid for a VM reachable at
@@ -38,21 +45,24 @@
 #
 # Examples:
 #   ./gen-certs.sh laptop-a laptop-b laptop-c rogue-client      # test harness
-#   ./gen-certs.sh --server-host bvl-vm.example.com my-mbp      # production
-#   ./gen-certs.sh --server-host 203.0.113.7 my-mbp other-mbp   # by IP
-#   ./gen-certs.sh --add-client my-new-mbp                      # add a laptop
+#   ./gen-certs.sh --out-dir ~/.browser-visit-logger/ca \
+#       --server-host bvl-vm.example.com my-mbp                # production
+#   ./gen-certs.sh --out-dir ~/.browser-visit-logger/ca --add-client my-new-mbp
 #
-# Output:
-#   certs/ca.crt              CA cert (use as both server-CA and client-CA)
-#   certs/ca.key              CA private key
-#   certs/server.crt          Server cert (CN=localhost; SAN always
+# (For production, prefer the `browser-visit-tools/gen-prod-certs` wrapper,
+# which pins --out-dir for you.)
+#
+# Output (under --out-dir, default ./certs):
+#   ca.crt                    CA cert (use as both server-CA and client-CA)
+#   ca.key                    CA private key
+#   server.crt                Server cert (CN=localhost; SAN always
 #                             includes localhost/127.0.0.1 plus any
 #                             --server-host values)
-#   certs/server.key
-#   certs/<id>.crt            Client cert (CN=<id>)
-#   certs/<id>.key            Client private key
-#   certs/<id>.sha256         SHA-256 of DER-encoded client cert
-#   certs/fingerprints.tsv    machine_id<TAB>cert_sha256 (appended in
+#   server.key
+#   <id>.crt                  Client cert (CN=<id>)
+#   <id>.key                  Client private key
+#   <id>.sha256               SHA-256 of DER-encoded client cert
+#   fingerprints.tsv          machine_id<TAB>cert_sha256 (appended in
 #                             --add-client mode, rewritten otherwise)
 set -euo pipefail
 
@@ -62,18 +72,29 @@ set -euo pipefail
 SERVER_HOSTS=()
 ADD_CLIENTS=()
 FORCE=0
+OUT_DIR=""
 while [ $# -gt 0 ]; do
+    # A value that looks like a flag almost always means the real value was
+    # forgotten (e.g. `--add-client --out-dir X`); fail clearly instead of
+    # swallowing the next flag as the value.
+    case "$1" in
+        --server-host|--add-client|--out-dir)
+            { [ $# -ge 2 ] && [ "${2#-}" = "$2" ]; } || {
+                echo "error: $1 needs a value (got '${2-}')" >&2; exit 2; } ;;
+    esac
     case "$1" in
         --server-host)
-            [ $# -ge 2 ] || { echo "error: --server-host needs a value" >&2; exit 2; }
             SERVER_HOSTS+=("$2"); shift 2 ;;
         --server-host=*)
             SERVER_HOSTS+=("${1#*=}"); shift ;;
         --add-client)
-            [ $# -ge 2 ] || { echo "error: --add-client needs a value" >&2; exit 2; }
             ADD_CLIENTS+=("$2"); shift 2 ;;
         --add-client=*)
             ADD_CLIENTS+=("${1#*=}"); shift ;;
+        --out-dir)
+            OUT_DIR="$2"; shift 2 ;;
+        --out-dir=*)
+            OUT_DIR="${1#*=}"; shift ;;
         --force) FORCE=1; shift ;;
         --) shift; break ;;
         -*) echo "error: unknown flag: $1" >&2; exit 2 ;;
@@ -81,7 +102,19 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/certs"
+# Resolve the cert directory: --out-dir if given (expand a leading ~/, make
+# relative paths absolute against $PWD), else ./certs next to this script.
+if [ -n "$OUT_DIR" ]; then
+    case "$OUT_DIR" in
+        "~/"*) OUT_DIR="$HOME/${OUT_DIR#"~/"}" ;;
+    esac
+    case "$OUT_DIR" in
+        /*) DIR="$OUT_DIR" ;;
+        *)  DIR="$PWD/$OUT_DIR" ;;
+    esac
+else
+    DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/certs"
+fi
 
 # Mint one client cert into the current directory (must hold ca.crt,
 # ca.key and client_ext.cnf).  Appends its fingerprint to fingerprints.tsv.
