@@ -107,6 +107,32 @@ func TestLookupQueryError(t *testing.T) {
 	}
 }
 
+// TestLookupAfterRevoke documents the live-revocation semantics: Lookup
+// re-queries the DB on every call (no caching), so deleting an enrolled
+// row through the same handle takes effect on the next lookup without
+// reopening the DB or restarting the server.
+func TestLookupAfterRevoke(t *testing.T) {
+	e := openTestEnrolled(t)
+	cert := mintCert(t, "laptop-a")
+	fp := fingerprint(cert)
+	if _, err := e.db.Exec(
+		"INSERT INTO enrolled_machines (machine_id, cert_sha256, enrolled_at) VALUES (?,?,?)",
+		"laptop-a", fp, "now"); err != nil {
+		t.Fatal(err)
+	}
+	if id, err := e.Lookup(fp); err != nil || id != "laptop-a" {
+		t.Fatalf("pre-revoke Lookup: id=%q err=%v", id, err)
+	}
+	// Revoke == delete the row (what enroll_machine.py --revoke does).
+	if _, err := e.db.Exec(
+		"DELETE FROM enrolled_machines WHERE cert_sha256 = ?", fp); err != nil {
+		t.Fatal(err)
+	}
+	if id, err := e.Lookup(fp); err != nil || id != "" {
+		t.Fatalf("post-revoke Lookup should miss: id=%q err=%v", id, err)
+	}
+}
+
 func TestResolveIDNoPeer(t *testing.T) {
 	e := openTestEnrolled(t)
 	_, err := resolveID(context.Background(), e)

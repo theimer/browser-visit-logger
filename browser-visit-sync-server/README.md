@@ -216,7 +216,7 @@ python3 ../browser-visit-tools/enroll_machine.py --db ... --machine-id X --revok
 ## Integration tests
 
 Full Docker Compose suite under [`test/`](test/) — minted certs,
-seeded enrolled DB, pytest driver, 7 end-to-end scenarios.  See
+seeded enrolled DB, pytest driver, 8 end-to-end scenarios.  See
 [`test/README.md`](test/README.md) for the workflow.  Short version:
 
 ```
