@@ -254,10 +254,16 @@ def replay_into_db(conn, raw: str) -> None:
     if tag in ('read', 'skimmed') and len(fields) >= 6:
         filename = fields[5]
         events_table = f'{tag}_events'
-        conn.execute(
+        cur = conn.execute(
             f"INSERT OR IGNORE INTO {events_table} (url, timestamp, filename) VALUES (?, ?, ?)",
             (url, timestamp, filename))
-        conn.execute(f"UPDATE visits SET {tag} = {tag} + 1 WHERE url = ?", (url,))
+        # Only bump the counter for a genuinely new event row.  The events
+        # PK is (url, timestamp), so replaying the same pulled line — e.g. a
+        # re-pull after a crash before the peer cursor advanced — IGNOREs the
+        # insert (rowcount 0) and must not double-count.  Mirrors
+        # host._insert_event's rowcount gate.
+        if cur.rowcount:
+            conn.execute(f"UPDATE visits SET {tag} = {tag} + 1 WHERE url = ?", (url,))
 
 
 # ----------------------------------------------------------------- grpc

@@ -293,6 +293,62 @@ def test_cmd_health(monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# enroll / revoke / list
+# --------------------------------------------------------------------------
+
+def _enroll_args(**kw):
+    base = dict(action='enroll', region=None, machine_id=None, cert=None,
+                revoke=False, list=False)
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+def test_enroll_inserts_fingerprint(monkeypatch, tmp_path):
+    import hashlib
+    cert = tmp_path / 'laptop-a.crt'
+    cert.write_bytes(b'DERBYTES')          # no PEM header → hashed as DER
+    fp = hashlib.sha256(b'DERBYTES').hexdigest()
+    runner, _ = _patch(monkeypatch)
+    assert mss.cmd_enroll(
+        _enroll_args(machine_id='laptop-a', cert=str(cert))) == 0
+    cmds = '\n'.join(runner.last_commands())
+    # the fingerprint is computed locally and the row written on the VM;
+    # no restart line — the server re-reads the DB live.
+    assert 'INSERT OR REPLACE' in cmds
+    assert 'laptop-a' in cmds and fp in cmds
+    assert f'chown bvlsync:bvlsync {mss._ENROLLED_DB}' in cmds
+    assert 'systemctl restart' not in cmds
+
+
+def test_enroll_requires_cert(monkeypatch, capsys):
+    _patch(monkeypatch)
+    assert mss.cmd_enroll(_enroll_args(machine_id='laptop-a')) == 2
+    assert 'required to enroll' in capsys.readouterr().err
+
+
+def test_enroll_revoke(monkeypatch):
+    runner, _ = _patch(monkeypatch)
+    assert mss.cmd_enroll(_enroll_args(revoke=True, machine_id='laptop-a')) == 0
+    cmds = '\n'.join(runner.last_commands())
+    assert 'DELETE FROM enrolled_machines' in cmds and 'laptop-a' in cmds
+    assert 'chown bvlsync:bvlsync' in cmds
+
+
+def test_enroll_revoke_requires_machine_id(monkeypatch, capsys):
+    _patch(monkeypatch)
+    assert mss.cmd_enroll(_enroll_args(revoke=True)) == 2
+    assert 'required to revoke' in capsys.readouterr().err
+
+
+def test_enroll_list_is_read_only(monkeypatch):
+    runner, _ = _patch(monkeypatch)
+    assert mss.cmd_enroll(_enroll_args(list=True)) == 0
+    cmds = '\n'.join(runner.last_commands())
+    assert 'SELECT machine_id' in cmds
+    assert 'chown' not in cmds              # list never writes
+
+
+# --------------------------------------------------------------------------
 # main dispatch + error + parser
 # --------------------------------------------------------------------------
 

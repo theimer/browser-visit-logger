@@ -52,8 +52,10 @@ one of the laptops):
   (`make build-linux`). Alternatively build it in Docker via
   `browser-visit-sync-server/deploy/Dockerfile`.
 - **`openssl`** — to mint TLS material.
-- **The AWS Session Manager plugin** — for the one manual VM-shell step in
-  [Step 4](#step-4--enroll-each-laptop). Install:
+- **The AWS Session Manager plugin** (optional) — only for opening an
+  interactive VM shell (e.g. the live log tail in
+  [Day-2 operations](#day-2-operations)); the setup steps don't need it.
+  Install:
   <https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html>
 
 **On each laptop**: macOS with the Xcode command-line tools (Swift
@@ -285,45 +287,35 @@ for the on-disk layout and the systemd unit.
 ## Step 4 — Enroll each laptop
 
 The server only accepts a client cert whose SHA-256 is recorded in the VM's
-`/var/lib/browser-visit-sync/enrolled_machines.db`. There is no
-SSM subcommand for this yet, so enrollment is the one manual step: build the
-DB locally with `enroll_machine.py`, then place it on the VM using the
-infrastructure that's already there (the S3 staging bucket the deploy tool
-uses, plus an SSM Session Manager shell).
+`/var/lib/browser-visit-sync/enrolled_machines.db`. The `enroll` subcommand
+does this in place over SSM — it computes the cert's fingerprint locally and
+writes the row on the VM. No file transfer, no SSM shell, and **no restart**
+(the server re-reads the allowlist on every request):
 
 ```bash
 cd browser-visit-tools
-pip install cryptography     # enroll_machine.py needs it to read PEM certs
 
-# One row per laptop. machine-id must match the cert CN from Step 2.
-for id in laptop-a laptop-b; do
-    python3 enroll_machine.py --db ./enrolled_machines.db \
-        --machine-id "$id" \
-        --cert ~/.browser-visit-logger/ca/$id.crt
-done
-python3 enroll_machine.py --db ./enrolled_machines.db --list   # sanity-check
+# One per laptop. machine-id must match the cert CN from Step 2.
+python3 manage_sync_server.py enroll --machine-id laptop-a \
+    --cert ~/.browser-visit-logger/ca/laptop-a.crt
+python3 manage_sync_server.py enroll --machine-id laptop-b \
+    --cert ~/.browser-visit-logger/ca/laptop-b.crt
 
-# Transfer to the VM via the per-account staging bucket the deploy uses.
-ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
-REGION=us-west-2                                  # the VM's region
-BUCKET="bvl-sync-deploy-${ACCOUNT}-${REGION}"
-aws s3 cp ./enrolled_machines.db "s3://${BUCKET}/enrolled_machines.db" --sse
-
-# Open a shell on the VM (no SSH — this is SSM Session Manager) and install it.
-INSTANCE=$(python3 -c "import json,os;print(json.load(open(os.path.expanduser('~/.browser-visit-logger/vm.json')))['instance_id'])")
-aws ssm start-session --target "$INSTANCE"
-#   --- on the VM ---
-#   sudo aws s3 cp s3://<bucket>/enrolled_machines.db /var/lib/browser-visit-sync/enrolled_machines.db
-#   sudo chown bvlsync:bvlsync /var/lib/browser-visit-sync/enrolled_machines.db
-#   sudo systemctl restart sync-server
-#   exit
+python3 manage_sync_server.py enroll --list        # verify
 ```
 
-To add a laptop later, re-run `enroll_machine.py` (it's `INSERT OR REPLACE`,
-so existing rows are preserved) and repeat the transfer. To revoke one, use
-`enroll_machine.py --revoke` and re-transfer. See the `enroll_machine.py`
-section in
-[`browser-visit-tools/README.md`](../browser-visit-tools/README.md#enroll_machinepy).
+`enroll` is `INSERT OR REPLACE`, so re-running is safe and existing rows are
+preserved — that's also how you **add a laptop later** (mint its cert with
+`gen-prod-certs --add-client`, then one `enroll`). To cut a laptop off:
+
+```bash
+python3 manage_sync_server.py enroll --machine-id laptop-a --revoke
+```
+
+> Needs `cryptography` locally for the PEM→DER fingerprint
+> (`pip install cryptography`). The lower-level `enroll_machine.py` still
+> exists if you ever need to edit an `enrolled_machines.db` file directly; see
+> [`browser-visit-tools/README.md`](../browser-visit-tools/README.md#enroll_machinepy).
 
 ## Step 5 — Install on each laptop
 

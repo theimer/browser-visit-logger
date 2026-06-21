@@ -315,12 +315,15 @@ class FakeStub:
     def __init__(self, channel):
         self.pushes = []
         self.push_raises = False
+        self.push_fail_after = None   # raise once this many pushes have succeeded
         self.pull_chunks = []
         self.pull_raises = None
 
     def PushLogs(self, req, timeout=None):
         if self.push_raises:
             raise RuntimeError('push boom')
+        if self.push_fail_after is not None and len(self.pushes) >= self.push_fail_after:
+            raise RuntimeError('push boom (later batch)')
         self.pushes.append(req)
 
     def PullLogs(self, req, timeout=None):
@@ -411,6 +414,41 @@ def test_do_pull_applies_chunks(conn, env):
     assert sc.get_cursor(conn, 'peerB') == ('2026-05-21', 1)
     mirror = os.path.join(env.peers, 'peerB', 'browser-visits-2026-05-21.log')
     assert os.path.exists(mirror)
+
+
+def test_do_pull_replay_is_idempotent(conn, env):
+    # Re-pulling the same lines (e.g. a re-pull after a crash before the peer
+    # cursor was persisted) must NOT double-count the read counter.
+    chunk = Msg(peer_machine_id='peerB', lines=[
+        Msg(date='2026-05-21', line_offset=0,
+            raw_line='\t'.join(['rid', 'ts', 'https://x', 'T'])),
+        Msg(date='2026-05-21', line_offset=1,
+            raw_line='\t'.join(['rid', 't2', 'https://x', 'T', 'read', 'a.mhtml'])),
+    ])
+    stub = FakeStub(None)
+    stub.pull_chunks = [chunk]
+    sc.do_pull(conn, None, FakeSyncPb2(), FakeStubFactory(stub), 'm', 'h:1')
+    sc.do_pull(conn, None, FakeSyncPb2(), FakeStubFactory(stub), 'm', 'h:1')
+    assert conn.execute(
+        "SELECT read FROM visits WHERE url='https://x'").fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM read_events WHERE url='https://x'").fetchone()[0] == 1
+
+
+def test_do_push_partial_failure_does_not_advance_cursor(conn, env):
+    # 501 lines → two PushLogs (500 + 1). The first batch is accepted, the
+    # second raises; the cursor must NOT advance, so the already-accepted
+    # lines re-push next run (PushLogs is idempotent server-side).
+    path = os.path.join(env.log_dir, 'browser-visits-2026-05-21.log')
+    with open(path, 'w') as f:
+        for i in range(501):
+            f.write(f'line{i}\n')
+    stub = FakeStub(None)
+    stub.push_fail_after = 1            # first push ok, second raises
+    with pytest.raises(RuntimeError):
+        sc.do_push(conn, None, FakeSyncPb2(), FakeStubFactory(stub), 'm', 'h:1')
+    assert len(stub.pushes) == 1                      # only the first batch sent
+    assert sc.get_cursor(conn, 'm') == ('', -1)       # cursor untouched
 
 
 def test_do_pull_sends_known_cursors(conn, env):
