@@ -350,6 +350,24 @@ Finally do the per-laptop Chrome steps from
 load the unpacked extension at `chrome://extensions`, and grant the macOS
 Files & Folders (TCC) prompts the first time you tag a page.
 
+> **Converting a laptop that already ran single-laptop mode?** Its historical
+> snapshots live in the iCloud archive (`~/Documents/browser-visit-logger/snapshots/`),
+> whereas multi-laptop mode uses the shared Google Drive archive — so those
+> older snapshots won't be visible until you migrate them. Run the one-time,
+> idempotent migration on that laptop (dry-run first):
+>
+> ```bash
+> python3 browser-visit-tools/migrate_icloud_to_gdrive.py --dry-run \
+>     --src ~/Documents/browser-visit-logger/snapshots \
+>     --dst "~/Library/CloudStorage/GoogleDrive/My Drive/browser-visit-logger/snapshots" \
+>     --db  ~/browser-visits.db
+> ```
+>
+> It copies the archive to Google Drive (SHA-256 verified), rewrites the DB
+> paths, and leaves the iCloud copy in place. Fresh laptops with no prior
+> single-laptop history can skip this. See
+> [`browser-visit-tools/README.md`](../browser-visit-tools/README.md#migrate_icloud_to_gdrivepy).
+
 ## Step 6 — Verify end to end
 
 1. On `laptop-a`, browse to a page and tag it (★ / ✓ / ~) from the popup.

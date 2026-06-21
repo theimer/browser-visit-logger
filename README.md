@@ -7,7 +7,8 @@ EC2-hosted gRPC service.
 The setup can run in either of two modes:
 
 - **Single-laptop** — extension → local DB + per-day TSV logs +
-  iCloud-synced snapshot archive.  No network.  Original design.
+  a snapshot archive under `~/Documents` (iCloud-synced).  No network.
+  Original design.
 - **Multi-laptop** — every laptop still writes locally as above, plus
   pushes its log records to (and pulls peer records from) a gRPC
   service running on a Linux VM.  The VM holds the canonical merged
@@ -21,6 +22,15 @@ The setup can run in either of two modes:
 create the EC2 VM, run the sync-server on it, and enrol/install one or
 more laptops — follow the end-to-end runbook in
 [`docs/MULTI_LAPTOP_SETUP.md`](docs/MULTI_LAPTOP_SETUP.md).
+
+**Converting an existing single-laptop install?** The two modes use
+different snapshot stores (iCloud Documents vs. Google Drive), so a
+laptop that already ran single-laptop mode has historical snapshots in
+iCloud that won't be visible to the shared Google Drive archive.  Run
+the one-time migration once per such laptop —
+[`browser-visit-tools/migrate_icloud_to_gdrive.py`](browser-visit-tools/migrate_icloud_to_gdrive.py)
+copies the archive to Google Drive (SHA-256 verified) and rewrites the
+DB paths; it's idempotent and leaves the iCloud copy in place.
 
 ## [`browser-visit-logger/`](browser-visit-logger/)
 
