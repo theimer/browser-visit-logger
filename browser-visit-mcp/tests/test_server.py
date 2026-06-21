@@ -132,7 +132,7 @@ def test_schema_lists_all_tables(seeded_db):
     out = server._do_schema(seeded_db)
     assert set(out['tables']) == {
         'visits', 'read_events', 'skimmed_events',
-        'snapshots', 'mover_errors',
+        'snapshots', 'mover_errors', 'sync_state',
     }
     assert 'CREATE TABLE' in out['ddl']
     assert 'visits' in out['ddl']
