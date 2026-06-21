@@ -7,7 +7,8 @@ EC2-hosted gRPC service.
 The setup can run in either of two modes:
 
 - **Single-laptop** — extension → local DB + per-day TSV logs +
-  iCloud-synced snapshot archive.  No network.  Original design.
+  a snapshot archive under `~/Documents` (iCloud-synced).  No network.
+  Original design.
 - **Multi-laptop** — every laptop still writes locally as above, plus
   pushes its log records to (and pulls peer records from) a gRPC
   service running on a Linux VM.  The VM holds the canonical merged
@@ -15,6 +16,21 @@ The setup can run in either of two modes:
   archive on Google Drive (accessible to laptops and the VM alike).
   Each laptop's local DB converges to the union of all laptops'
   activity within ~1 minute of any interaction.
+
+**Setting it up from scratch?** Single-laptop mode is just
+`browser-visit-logger/install.sh`.  For the full multi-laptop stack —
+create the EC2 VM, run the sync-server on it, and enrol/install one or
+more laptops — follow the end-to-end runbook in
+[`docs/MULTI_LAPTOP_SETUP.md`](docs/MULTI_LAPTOP_SETUP.md).
+
+**Converting an existing single-laptop install?** The two modes use
+different snapshot stores (iCloud Documents vs. Google Drive), so a
+laptop that already ran single-laptop mode has historical snapshots in
+iCloud that won't be visible to the shared Google Drive archive.  Run
+the one-time migration once per such laptop —
+[`browser-visit-tools/migrate_icloud_to_gdrive.py`](browser-visit-tools/migrate_icloud_to_gdrive.py)
+copies the archive to Google Drive (SHA-256 verified) and rewrites the
+DB paths; it's idempotent and leaves the iCloud copy in place.
 
 ## [`browser-visit-logger/`](browser-visit-logger/)
 
@@ -46,11 +62,15 @@ The Go gRPC service that runs on the EC2 Linux VM.  Three RPCs:
   transactionally-consistent SQLite snapshot back to the caller.
   Feeds `browser-visit-tools/db_diff.py`.
 
-Authentication is mTLS.  Each laptop has its own client cert; the
-server pins the cert SHA-256 to a `machine_id` via the
-`enrolled_machines.db` SQLite file (managed by
-`browser-visit-tools/enroll_machine.py`).  Identity spoofing is
-caught by a `CrossCheck(ctx, claimedID)` call on every RPC.
+Authentication is mTLS.  Each laptop has its own client cert.  The
+server's allowlist is `enrolled_machines.db`, a SQLite file on the VM
+that maps each laptop's `machine_id` to its client-cert SHA-256.  You
+populate it with the admin tool `browser-visit-tools/enroll_machine.py`
+(enroll / revoke / list); the server only reads it, at handshake time,
+rejecting any cert whose fingerprint isn't enrolled.  Identity spoofing
+— a laptop presenting a valid enrolled cert but claiming a different
+`machine_id` — is caught by a `CrossCheck(ctx, claimedID)` call on every
+RPC.
 
 Includes a full Docker Compose integration suite under
 [`browser-visit-sync-server/test/`](browser-visit-sync-server/test/);
@@ -155,9 +175,9 @@ never modified.
 |---|---|---|---|
 | `browser-visit-logger` (Python) | `make test-py` | python3 | 225 tests, 100% (gated) |
 | `browser-visit-logger` (JS) | `make test-js` | node/npm | 131 tests, 100% |
-| `browser-visit-tools` | `make test` | python3 | 167 tests, 100% (gated) |
+| `browser-visit-tools` | `make test` | python3 | 168 tests, 100% (gated) |
 | `browser-visit-sync-server` (Go unit) | `make cover` | go 1.22+, protoc | 94–100% per package¹ |
-| `browser-visit-sync-server` (integration) | `make test-integration` | Docker | 7 end-to-end tests |
+| `browser-visit-sync-server` (integration) | `make test-integration` | Docker | 8 end-to-end tests |
 | `browser-visit-mcp` | `pytest` | python3 | see its README |
 
 ¹ Go residuals are `main()` (a process entrypoint) plus unreachable

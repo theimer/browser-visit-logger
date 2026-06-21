@@ -188,8 +188,11 @@ caught it).
 
 ## Enrolling a new laptop
 
-On the VM (or wherever you have the `enrolled_machines.db` file the
-server is configured to read):
+First mint that laptop's client cert against the existing CA — without
+re-issuing anything — with `browser-visit-tools/gen-prod-certs --add-client
+<machine-id>` (see the [setup runbook](../docs/MULTI_LAPTOP_SETUP.md#adding-a-laptop-later-incremental-no-downtime)).
+Then record it on the VM (or wherever you have the `enrolled_machines.db`
+file the server is configured to read):
 
 ```
 python3 ../browser-visit-tools/enroll_machine.py \
@@ -213,7 +216,7 @@ python3 ../browser-visit-tools/enroll_machine.py --db ... --machine-id X --revok
 ## Integration tests
 
 Full Docker Compose suite under [`test/`](test/) — minted certs,
-seeded enrolled DB, pytest driver, 7 end-to-end scenarios.  See
+seeded enrolled DB, pytest driver, 8 end-to-end scenarios.  See
 [`test/README.md`](test/README.md) for the workflow.  Short version:
 
 ```

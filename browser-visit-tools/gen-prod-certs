@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# gen-prod-certs — Mint PRODUCTION mTLS material for the multi-laptop
+# sync-server into ~/.browser-visit-logger/ca/ (override with BVL_CA_DIR).
+#
+# Thin wrapper over browser-visit-sync-server/test/gen-certs.sh that pins
+# --out-dir to the production CA directory, so the crown-jewel CA never
+# lands in the throwaway test/certs/ (which the integration suite WIPES).
+# Every other flag passes straight through:
+#
+#   gen-prod-certs --server-host <vm-dns-or-ip> <machine-id>...   # first run
+#   gen-prod-certs --add-client <machine-id>                      # add a laptop
+#
+# See docs/MULTI_LAPTOP_SETUP.md.  Keep the resulting ca.key safe — it's
+# the root of trust and what you need to enrol more laptops later.
+set -euo pipefail
+
+OUT_DIR="${BVL_CA_DIR:-$HOME/.browser-visit-logger/ca}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GEN="$HERE/../browser-visit-sync-server/test/gen-certs.sh"
+
+[ -f "$GEN" ] || { echo "error: cannot find gen-certs.sh at $GEN" >&2; exit 2; }
+
+echo "minting production certs into $OUT_DIR" >&2
+exec bash "$GEN" --out-dir "$OUT_DIR" "$@"

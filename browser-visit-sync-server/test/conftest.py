@@ -75,7 +75,7 @@ def certs_dir():
             pytest.fail(f"BVL_TEST_USE_EXISTING=1 but {CERTS} doesn't exist")
         return CERTS
     subprocess.check_call(
-        ['bash', str(HERE / 'gen-certs.sh'), *MACHINES, ROGUE])
+        ['bash', str(HERE / 'gen-certs.sh'), '--force', *MACHINES, ROGUE])
     return CERTS
 
 

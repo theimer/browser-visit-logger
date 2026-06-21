@@ -4,6 +4,8 @@ Scenarios:
 
   * Push + Pull round-trip: laptop-a pushes lines; laptop-b pulls
     and sees them; laptop-a does NOT get its own lines echoed back.
+  * Cursor resumption: after advancing the per-peer cursor, a second
+    pull returns only the lines strictly past it (not the whole log).
   * Cursor idempotency: replaying the same PushLogs is a no-op (no
     duplicate rows in the canonical DB, server reports same high
     water mark).
@@ -107,6 +109,42 @@ def test_push_pull_round_trip(channel_for, grpc_stubs):
     # laptop-a pulling: should NOT see its own records echoed.
     chunks_a = _pull_all(stub_a, sync_pb2, 'laptop-a')
     assert 'laptop-a' not in chunks_a
+
+
+def test_pull_resumes_from_cursor(channel_for, grpc_stubs):
+    """A second pull with an advanced cursor returns only the lines
+    strictly past it — proving cursor resumption, not a full re-stream."""
+    sync_pb2, sync_pb2_grpc = grpc_stubs
+    date = '2026-05-28'  # dedicated date so this peer's offsets start at 0
+    url = f"https://cursor.example/{uuid.uuid4()}"
+    stub_a = sync_pb2_grpc.BrowserVisitSyncStub(channel_for('laptop-a'))
+    stub_b = sync_pb2_grpc.BrowserVisitSyncStub(channel_for('laptop-b'))
+
+    # First batch at offsets 0..1, then a second batch at offsets 2..3.
+    _push(stub_a, sync_pb2, 'laptop-a', [
+        (0, _line('rid-cur-1', '2026-05-28T09:00:00Z', url, 'C')),
+        (1, _result_line('rid-cur-1')),
+    ], date=date)
+    _push(stub_a, sync_pb2, 'laptop-a', [
+        (2, _line('rid-cur-2', '2026-05-28T09:05:00Z', url, 'C',
+                  tag='read', filename='c.mhtml')),
+        (3, _result_line('rid-cur-2')),
+    ], date=date)
+
+    # Resume from offset 1 → only the new offsets 2 and 3 come back.
+    # (Filter to this test's date: a single per-peer cursor lets earlier
+    # dates through, which other tests' pushes would add noise from.)
+    chunks = _pull_all(stub_b, sync_pb2, 'laptop-b',
+                       cursors={'laptop-a': (date, 1)})
+    got = sorted(off for (d, off, _raw) in chunks.get('laptop-a', [])
+                 if d == date)
+    assert got == [2, 3], f"expected only new offsets [2, 3], got {got}"
+
+    # Resume from the tip → nothing past the cursor for this date.
+    chunks2 = _pull_all(stub_b, sync_pb2, 'laptop-b',
+                        cursors={'laptop-a': (date, 3)})
+    tail = [off for (d, off, _raw) in chunks2.get('laptop-a', []) if d == date]
+    assert tail == [], f"expected no lines past the tip, got {tail}"
 
 
 def test_push_idempotent_on_replay(channel_for, grpc_stubs):

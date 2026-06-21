@@ -35,6 +35,7 @@ one-line wrapper note before delegating.
 | `./generate_reading_list` | `reading_list.py` | of_interest-but-unread → HTML or Markdown |
 | `db_diff.py` | (Python, no wrapper) | Diff two `browser-visits.db` files |
 | `fetch_vm_snapshot.py` | (Python, no wrapper) | Download a consistent VM DB snapshot via gRPC |
+| `gen-prod-certs` | `../browser-visit-sync-server/test/gen-certs.sh` | Mint production mTLS material into `~/.browser-visit-logger/ca/` |
 | `enroll_machine.py` | (Python, no wrapper) | VM-side admin: enroll a laptop's mTLS cert |
 | `migrate_icloud_to_gdrive.py` | (Python, no wrapper) | One-time iCloud → Google Drive snapshot migration |
 | `install_laptop.sh` | (Bash) | Laptop install for multi-laptop mode |
@@ -157,6 +158,25 @@ python3 fetch_vm_snapshot.py --server localhost:50051 \
     --machine-id laptop-a --insecure --out /tmp/vm.db \
     --client-cert /dev/null --client-key /dev/null --ca /dev/null
 ```
+
+### `gen-prod-certs`
+
+Thin wrapper over `browser-visit-sync-server/test/gen-certs.sh` that pins
+`--out-dir` to `~/.browser-visit-logger/ca/` (override with `BVL_CA_DIR`),
+so the production CA never lands in the throwaway `test/certs/` that
+`make test-integration` wipes.  All other flags pass straight through.
+
+```bash
+# First run: mint CA + server cert + one client cert per laptop
+./gen-prod-certs --server-host bvl-vm.example.com laptop-a laptop-b
+
+# Later: add one more laptop against the existing CA (non-destructive)
+./gen-prod-certs --add-client my-new-mbp
+```
+
+Keep the resulting `ca.key` safe — it's the root of trust and what you
+need to enrol more laptops later.  See the
+[setup runbook](../docs/MULTI_LAPTOP_SETUP.md#step-2--mint-tls-material).
 
 ### `enroll_machine.py`
 
@@ -285,7 +305,9 @@ python3 manage_vm.py terminate --purge-infra
 
 `create` flags: `--allow-cidr CIDR` (required, repeatable), `--region`,
 `--instance-type`, `--volume-size` (GiB, default 20),
-`--arch {x86_64,arm64}` (default `x86_64`), `--ami` (override the
+`--arch {x86_64,arm64}` (default `arm64`/Graviton — cheaper, and the
+pure-Go server has no x86 dependency; the instance type follows the arch:
+`t4g.small` for arm64, `t3.small` for x86_64), `--ami` (override the
 resolved Amazon Linux 2023 AMI).  Exit codes: 0 ok, 1 AWS/operation
 failure, 2 usage.
 
@@ -352,6 +374,14 @@ the VM's recorded arch unless you pass `--force`.  Exit codes: 0 ok,
 - S3: full access to the `bvl-sync-deploy-*` bucket
 - STS: `sts:GetCallerIdentity`
 
+These tools read the **ambient** boto3 credential chain (no `--profile` flag),
+so with AWS SSO you must `aws sso login` *and* `export AWS_PROFILE=<profile>`
+in the same shell. Note that `PowerUserAccess` lacks the IAM permissions above,
+so `manage_vm.py create` needs an admin-capable role. The end-to-end
+[multi-laptop setup runbook](../docs/MULTI_LAPTOP_SETUP.md#troubleshooting) has
+a Troubleshooting section covering the SSO sign-in, credential, IAM-denial, and
+`RunInstances` errors seen in practice, each with its fix.
+
 ## Development
 
 A `Makefile` builds a throwaway virtualenv under `.venv-test/`
@@ -393,6 +423,7 @@ browser-visit-tools/
 ├── generate_reading_list           # bash wrapper → reading_list.py
 ├── db_diff.py                      # diff two SQLite browser-visits DBs
 ├── fetch_vm_snapshot.py            # gRPC client → ExportDbSnapshot
+├── gen-prod-certs                  # wrap gen-certs.sh → ~/.browser-visit-logger/ca/
 ├── enroll_machine.py               # VM-side admin tool
 ├── migrate_icloud_to_gdrive.py     # one-time archive migration
 ├── install_laptop.sh               # multi-laptop laptop install
