@@ -7,3 +7,12 @@
 __pycache__/
 browser-visit-mcp/.venv/
 browser-visit-mcp/*.egg-info/
+
+# macOS
+.DS_Store
+
+# TLS / key material — never commit, wherever it lands in the tree
+*.pem
+*.key
+*.crt
+*.srl
