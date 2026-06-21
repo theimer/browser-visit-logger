@@ -62,11 +62,15 @@ The Go gRPC service that runs on the EC2 Linux VM.  Three RPCs:
   transactionally-consistent SQLite snapshot back to the caller.
   Feeds `browser-visit-tools/db_diff.py`.
 
-Authentication is mTLS.  Each laptop has its own client cert; the
-server pins the cert SHA-256 to a `machine_id` via the
-`enrolled_machines.db` SQLite file (managed by
-`browser-visit-tools/enroll_machine.py`).  Identity spoofing is
-caught by a `CrossCheck(ctx, claimedID)` call on every RPC.
+Authentication is mTLS.  Each laptop has its own client cert.  The
+server's allowlist is `enrolled_machines.db`, a SQLite file on the VM
+that maps each laptop's `machine_id` to its client-cert SHA-256.  You
+populate it with the admin tool `browser-visit-tools/enroll_machine.py`
+(enroll / revoke / list); the server only reads it, at handshake time,
+rejecting any cert whose fingerprint isn't enrolled.  Identity spoofing
+— a laptop presenting a valid enrolled cert but claiming a different
+`machine_id` — is caught by a `CrossCheck(ctx, claimedID)` call on every
+RPC.
 
 Includes a full Docker Compose integration suite under
 [`browser-visit-sync-server/test/`](browser-visit-sync-server/test/);
