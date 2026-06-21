@@ -18,6 +18,9 @@ Subcommands
     logs       journalctl snapshot (NOT a live tail — for follow, use
                `aws ssm start-session`)
     health     service active + gRPC port answers + disk ok
+    enroll     enrol / revoke / list a laptop in the server's
+               enrolled_machines.db, in place over SSM (no restart — the
+               server re-reads the allowlist on every request)
 
 The VM itself (and its AWS infra) is owned by the sibling
 ``manage_vm.py``.  Build the binary first with
@@ -28,10 +31,13 @@ Exit codes: 0 success, 1 remote/AWS failure, 2 usage.
 
 import argparse
 import hashlib
+import os
+import shlex
 import sys
 from pathlib import Path
 
 import _bvl_aws as aws
+import enroll_machine
 
 _HERE = Path(__file__).resolve().parent
 _UNIT_FILE = _HERE.parent / 'browser-visit-sync-server' / 'deploy' / \
@@ -42,6 +48,38 @@ _GOARCH = {'x86_64': 'amd64', 'arm64': 'arm64'}
 
 _DATA_DIR = '/var/lib/browser-visit-sync'
 _ETC_DIR = '/etc/browser-visit-sync'
+_ENROLLED_DB = f'{_DATA_DIR}/enrolled_machines.db'
+
+# Stdlib-only program run on the VM (Amazon Linux 2023 ships python3) to
+# mutate the server's allowlist in place.  argv: <db> <op> [machine_id] [fp].
+# The server re-reads enrolled_machines.db on every request, so no restart is
+# needed; busy_timeout rides out the brief lock the live server may hold.
+_ENROLL_PY = '''\
+import sqlite3, sys, datetime
+conn = sqlite3.connect(sys.argv[1])
+conn.execute("PRAGMA busy_timeout=5000")
+conn.execute("CREATE TABLE IF NOT EXISTS enrolled_machines ("
+             "machine_id TEXT PRIMARY KEY, cert_sha256 TEXT NOT NULL, "
+             "enrolled_at TEXT NOT NULL)")
+op = sys.argv[2]
+if op == "list":
+    rows = conn.execute("SELECT machine_id, cert_sha256, enrolled_at FROM "
+                        "enrolled_machines ORDER BY machine_id").fetchall()
+    for r in rows:
+        print("%-30s %s... %s" % (r[0], r[1][:16], r[2]))
+    print("(%d enrolled)" % len(rows))
+elif op == "revoke":
+    n = conn.execute("DELETE FROM enrolled_machines WHERE machine_id=?",
+                     (sys.argv[3],)).rowcount
+    conn.commit()
+    print("revoked %s (%d row(s))" % (sys.argv[3], n))
+else:
+    conn.execute("INSERT OR REPLACE INTO enrolled_machines VALUES (?,?,?)",
+                 (sys.argv[3], sys.argv[4],
+                  datetime.datetime.now(datetime.timezone.utc).isoformat()))
+    conn.commit()
+    print("enrolled %s" % sys.argv[3])
+'''
 
 
 def _surface(result):
@@ -214,10 +252,48 @@ def cmd_health(args):
                                    comment='bvl health'))
 
 
+def _enroll_remote(op, machine_id=None, fp=None):
+    """Shell lines that run the enrolled-DB ``op`` on the VM over SSM."""
+    argv = [_ENROLLED_DB, op]
+    if op == 'enroll':
+        argv += [machine_id, fp]
+    elif op == 'revoke':
+        argv += [machine_id]
+    quoted = ' '.join(shlex.quote(a) for a in argv)
+    lines = ['set -euo pipefail',
+             f'python3 -c {shlex.quote(_ENROLL_PY)} {quoted}']
+    if op != 'list':
+        # The write ran as root; keep the file owned by the service account.
+        lines.append(f'chown bvlsync:bvlsync {_ENROLLED_DB}')
+    return lines
+
+
+def cmd_enroll(args):
+    if args.list:
+        op, machine_id, fp = 'list', None, None
+    elif args.revoke:
+        if not args.machine_id:
+            print("error: --machine-id required to revoke", file=sys.stderr)
+            return 2
+        op, machine_id, fp = 'revoke', args.machine_id, None
+    else:
+        if not args.machine_id or not args.cert:
+            print("error: --machine-id and --cert required to enroll",
+                  file=sys.stderr)
+            return 2
+        op, machine_id = 'enroll', args.machine_id
+        fp = enroll_machine.cert_fingerprint(
+            Path(os.path.expanduser(args.cert)))
+    _region, ssm, instance_id = _ssm_target(args)
+    return _surface(aws.run_remote(
+        ssm, instance_id, _enroll_remote(op, machine_id, fp),
+        comment=f'bvl enroll {op}'))
+
+
 _DISPATCH = {
     'provision': cmd_provision, 'deploy': cmd_deploy, 'start': cmd_start,
     'stop': cmd_stop, 'restart': cmd_restart, 'status': cmd_status,
-    'logs': cmd_logs, 'health': cmd_health,
+    'logs': cmd_logs, 'health': cmd_health, 'enroll': cmd_enroll,
 }
 
 
@@ -257,6 +333,15 @@ def _build_parser():
     pl.add_argument('--lines', type=int, default=100,
                     help='number of log lines (default 100)')
     pl.add_argument('--since', help="journalctl --since value, e.g. '1 hour ago'")
+
+    pe = with_region(sub.add_parser(
+        'enroll', help='enrol / revoke / list laptops on the VM'))
+    pe.add_argument('--machine-id', help='laptop machine id (= its cert CN)')
+    pe.add_argument('--cert', help='laptop client cert (PEM or DER) to enrol')
+    pe.add_argument('--revoke', action='store_true',
+                    help='revoke --machine-id instead of enrolling')
+    pe.add_argument('--list', action='store_true',
+                    help='list the enrolled machines')
     return p
 
 

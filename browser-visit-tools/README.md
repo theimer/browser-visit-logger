@@ -340,6 +340,7 @@ make -C ../browser-visit-sync-server build-linux GOARCH=amd64   # or arm64
 | `status` | `systemctl is-active` + `status` |
 | `logs` | `journalctl` **snapshot** (`--lines`, `--since`); for a live tail use `aws ssm start-session` |
 | `health` | service active + gRPC port answers + disk under 90 % |
+| `enroll` | enrol (`--machine-id` + `--cert`), `--revoke`, or `--list` laptops in the server's `enrolled_machines.db` in place over SSM — fingerprint computed locally, no restart (the server re-reads the allowlist per request) |
 
 ```bash
 # First-boot setup (TLS material passed as local PEM paths)
@@ -352,6 +353,11 @@ python3 manage_sync_server.py deploy \
     --binary ../browser-visit-sync-server/bin/sync-server-linux-amd64
 python3 manage_sync_server.py start
 python3 manage_sync_server.py health
+
+# Enrol a laptop's cert (writes the VM's allowlist over SSM; no restart)
+python3 manage_sync_server.py enroll --machine-id laptop-a \
+    --cert ~/.browser-visit-logger/ca/laptop-a.crt
+python3 manage_sync_server.py enroll --list
 python3 manage_sync_server.py logs --lines 50
 ```
 

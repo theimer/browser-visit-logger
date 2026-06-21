@@ -191,27 +191,31 @@ caught it).
 First mint that laptop's client cert against the existing CA — without
 re-issuing anything — with `browser-visit-tools/gen-prod-certs --add-client
 <machine-id>` (see the [setup runbook](../docs/MULTI_LAPTOP_SETUP.md#adding-a-laptop-later-incremental-no-downtime)).
-Then record it on the VM (or wherever you have the `enrolled_machines.db`
-file the server is configured to read):
+Then record it on the VM with the `enroll` subcommand, which computes the
+cert fingerprint locally and writes the row in place over SSM (no file
+transfer, no restart):
 
 ```
-python3 ../browser-visit-tools/enroll_machine.py \
-    --db /var/lib/browser-visit-sync/enrolled_machines.db \
+python3 ../browser-visit-tools/manage_sync_server.py enroll \
     --machine-id <id-printed-by-install_laptop.sh> \
-    --cert /path/to/that-laptop-client.crt
+    --cert ~/.browser-visit-logger/ca/<id>.crt
 ```
 
-The script SHA-256s the cert's DER bytes and inserts a row.  At
-handshake time, the server's auth interceptor SHA-256s the peer's
-leaf cert and looks for the matching row — no match means
-`PermissionDenied` with no further detail (defense against
-enumeration).
+The fingerprint is the SHA-256 of the cert's DER bytes.  At handshake
+time, the server's auth interceptor SHA-256s the peer's leaf cert and
+looks for the matching row — no match means `PermissionDenied` with no
+further detail (defense against enumeration).  The server re-reads
+`enrolled_machines.db` on every request, so the change takes effect
+immediately.
 
 To list / revoke:
 ```
-python3 ../browser-visit-tools/enroll_machine.py --db ... --list
-python3 ../browser-visit-tools/enroll_machine.py --db ... --machine-id X --revoke
+python3 ../browser-visit-tools/manage_sync_server.py enroll --list
+python3 ../browser-visit-tools/manage_sync_server.py enroll --machine-id X --revoke
 ```
+
+The lower-level `enroll_machine.py` still edits an `enrolled_machines.db`
+file directly if you ever need that (e.g. seeding the integration tests).
 
 ## Integration tests
 
