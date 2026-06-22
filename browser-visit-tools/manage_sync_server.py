@@ -100,9 +100,15 @@ def _surface(result):
 def _ssm_target(args):
     """Resolve the instance, build an SSM client, and wait for the agent
     to be Online.  Returns (region, ssm, instance_id)."""
-    region = aws.resolve_region(args.region)
+    state = aws.load_state()
+    # Fall back to the VM's recorded region so every client (ec2/ssm/s3)
+    # targets where the VM actually lives.  A region-less run otherwise
+    # leaves region=None, which poisons the staging-bucket name and makes
+    # CreateBucket fail with IllegalLocationConstraintException against the
+    # ambient (non-us-east-1) endpoint boto3 picks.
+    region = aws.resolve_region(args.region) or state.get('region')
     ec2 = aws.client('ec2', region)
-    instance_id = aws.resolve_instance_id(ec2, aws.load_state())
+    instance_id = aws.resolve_instance_id(ec2, state)
     ssm = aws.client('ssm', region)
     print(f"region={region or 'default'} instance={instance_id}")
     aws.wait_for_ssm_online(ssm, instance_id)
