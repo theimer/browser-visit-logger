@@ -174,7 +174,10 @@ class FakeSSM:
         return {'Command': {'CommandId': 'cmd-1'}}
 
     def get_command_invocation(self, **kw):
-        return self._invocations.pop(0)
+        item = self._invocations.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
 
 
 def _clock(values):
@@ -254,6 +257,25 @@ def test_run_remote_timeout():
     with pytest.raises(TimeoutError):
         aws.run_remote(ssm, 'i-1', ['c'], timeout=5,
                        sleep=lambda _s: None, monotonic=_clock([0, 99]))
+
+
+def test_run_remote_tolerates_invocation_not_yet_registered():
+    # Right after send_command, GetCommandInvocation raises
+    # InvocationDoesNotExist until the invocation lands — run_remote must
+    # keep polling, not crash.
+    ssm = FakeSSM(invocations=[
+        FakeError('InvocationDoesNotExist'), _inv('Success', 0, 'ok\n')])
+    res = aws.run_remote(ssm, 'i-1', ['c'],
+                         sleep=lambda _s: None, monotonic=_clock([0, 1]))
+    assert res.status == 'Success' and res.stdout == 'ok\n'
+
+
+def test_run_remote_reraises_other_invocation_error():
+    # Any other SSM error propagates (not swallowed as the registration race).
+    ssm = FakeSSM(invocations=[FakeError('AccessDeniedException')])
+    with pytest.raises(FakeError):
+        aws.run_remote(ssm, 'i-1', ['c'],
+                       sleep=lambda _s: None, monotonic=_clock([0]))
 
 
 # --------------------------------------------------------------------------
