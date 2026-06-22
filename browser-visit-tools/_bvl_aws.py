@@ -190,17 +190,26 @@ def run_remote(ssm, instance_id, commands, comment='', timeout=300,
     )
     command_id = sent['Command']['CommandId']
     deadline = monotonic() + timeout
+    status = 'pending'
     while True:
-        inv = ssm.get_command_invocation(
-            CommandId=command_id, InstanceId=instance_id)
-        status = inv.get('Status')
-        if status in _SSM_TERMINAL:
-            return RemoteResult(
-                status=status,
-                exit_code=inv.get('ResponseCode', -1),
-                stdout=inv.get('StandardOutputContent', ''),
-                stderr=inv.get('StandardErrorContent', ''),
-            )
+        try:
+            inv = ssm.get_command_invocation(
+                CommandId=command_id, InstanceId=instance_id)
+        except Exception as e:  # noqa: BLE001 - re-raised unless it's the race
+            # For a brief window after send_command the invocation isn't
+            # registered yet and SSM raises InvocationDoesNotExist; that's
+            # not a failure, so keep polling until it lands.
+            if error_code(e) != 'InvocationDoesNotExist':
+                raise
+        else:
+            status = inv.get('Status')
+            if status in _SSM_TERMINAL:
+                return RemoteResult(
+                    status=status,
+                    exit_code=inv.get('ResponseCode', -1),
+                    stdout=inv.get('StandardOutputContent', ''),
+                    stderr=inv.get('StandardErrorContent', ''),
+                )
         if monotonic() >= deadline:
             raise TimeoutError(
                 f"SSM command {command_id} still {status} after {timeout}s")
