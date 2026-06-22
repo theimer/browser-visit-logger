@@ -352,6 +352,18 @@ def test_enroll_list_is_read_only(monkeypatch):
 # main dispatch + error + parser
 # --------------------------------------------------------------------------
 
+def test_region_defaults_to_vm_state(monkeypatch, tmp_path, capsys):
+    # No --region / BVL_AWS_REGION: fall back to the VM's recorded region so
+    # the ec2/ssm/s3 clients target where the VM lives.  Without it, region
+    # stays None and the staging bucket's CreateBucket fails with
+    # IllegalLocationConstraintException.
+    monkeypatch.delenv('BVL_AWS_REGION', raising=False)
+    _write_state(monkeypatch, tmp_path, region='us-west-2', instance_id='i-1')
+    _patch(monkeypatch)
+    assert mss.cmd_start(_args('start')) == 0
+    assert 'region=us-west-2' in capsys.readouterr().out
+
+
 def test_main_dispatch_start(monkeypatch):
     _patch(monkeypatch)
     assert mss.main(['start']) == 0
