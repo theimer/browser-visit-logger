@@ -19,6 +19,30 @@ into two groups:
   EC2 VM that hosts the sync-server, and remotely manage the server
   process over AWS SSM (no SSH).  Need `boto3` and AWS credentials.
 
+## Setup
+
+The read-only DB consumers (`reading_list.py`, `db_diff.py`) use only
+the standard library and need no install. The AWS tools (`manage_vm.py`,
+`manage_sync_server.py`) need `boto3`, and `enroll_machine.py`'s cert path
+needs `cryptography`. Both are listed in [`requirements.txt`](requirements.txt).
+
+Install them into a venv rather than the system Python:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python manage_sync_server.py health   # or: source .venv/bin/activate
+```
+
+A venv is recommended over `pip install --user`: Homebrew's `python3` is
+externally managed (PEP 668 blocks a plain `pip install`), and a `brew upgrade`
+that bumps the Python version wipes the global `site-packages`, silently
+removing previously-installed packages. The venv has its own `site-packages`
+that upgrades don't touch. `.venv/` is gitignored.
+
+(This is separate from the test venv under `.venv-test/`, which the `Makefile`
+manages — see [Development](#development).)
+
 ## CLI scripts
 
 All scripts live at the project root.  They share the same `BVL_*`
@@ -368,7 +392,8 @@ the VM's recorded arch unless you pass `--force`.  Exit codes: 0 ok,
 
 #### Prerequisites
 
-`boto3` (`pip install boto3`) and AWS credentials with, at minimum:
+`boto3` (see [Setup](#setup) — `pip install -r requirements.txt` into a venv)
+and AWS credentials with, at minimum:
 
 - EC2: `ec2:RunInstances`, `*Instances`, security-group create/authorize/delete,
   `ec2:DescribeImages`/`DescribeInstances`
