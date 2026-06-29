@@ -70,7 +70,13 @@ one of the laptops):
   <https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html>
 
 **On each laptop**: macOS with the Xcode command-line tools (Swift
-toolchain), Chrome/Chromium, and Python 3 (the system `python3` is fine).
+toolchain), Chrome/Chromium, and Python 3. The sync client needs a Python
+with prebuilt `grpcio` wheels — `install_laptop.sh` (Step 5) builds a
+dedicated venv for it and auto-picks a suitable interpreter
+(`python3.13` → `3.12` → `3.11`, else `python3`). The system `python3` is
+fine; a very new Homebrew `python3` (e.g. 3.14) may have no wheels yet and
+trigger a failing source build — override with
+`BVL_SYNC_PYTHON=/path/to/python3.13`.
 
 All `manage_*` commands below are run from the `browser-visit-tools/`
 directory. They need the dependencies from the venv created above, so
@@ -334,10 +340,19 @@ python3 manage_sync_server.py enroll --machine-id laptop-a --revoke
 
 ## Step 5 — Install on each laptop
 
-On every laptop, run the multi-laptop installer pointed at the VM. It runs
-the upstream `install.sh` (builds/signs the native host, installs the Chrome
-manifest) and writes `~/.browser-visit-logger/config.json` with this
-laptop's `machine_id` and the sync endpoint.
+On every laptop, run the multi-laptop installer pointed at the VM. It:
+
+- **provisions the sync runtime** — a dedicated grpcio venv at
+  `~/.browser-visit-logger/sync-venv` and the generated gRPC Python stubs
+  (the bare `python3` the host would otherwise use lacks `grpcio`, so sync
+  would silently never connect);
+- **runs the upstream `install.sh`** (builds/signs the native host — which
+  now also bundles the sync client + stubs into the app so the host can
+  always find them — and installs the Chrome manifest), with the verifier
+  LaunchAgent **skipped** (`BVL_SKIP_VERIFIER=1`; sealing and verification
+  run on the VM in multi-laptop mode);
+- **writes `~/.browser-visit-logger/config.json`** with this laptop's
+  `machine_id` and the sync endpoint.
 
 ```bash
 bash browser-visit-tools/install_laptop.sh --server <vm-dns-or-ip>:50443
@@ -406,6 +421,28 @@ Files & Folders (TCC) prompts the first time you tag a page.
    ```bash
    sqlite3 ~/browser-visits.db 'SELECT url FROM visits ORDER BY rowid DESC LIMIT 5;'
    ```
+
+> **Telling whether the laptop side is actually syncing** — two local
+> signals, independent of any server/AWS access:
+>
+> ```bash
+> # The per-machine sync cursor: last_sync_success_at should advance and
+> # last_error stay empty within ~60s of an interaction.
+> sqlite3 ~/browser-visits.db \
+>   "SELECT machine_id, last_sync_success_at, last_error FROM sync_state;"
+>
+> # The host must actually spawn the client — this should NOT print
+> # "skipping spawn" (which means it can't find sync_client.py).
+> grep sync_client ~/browser-visits-host.log | tail -3
+> ```
+>
+> No `sync_state` table at all means the client has never run. To force a
+> sync by hand (look for `sync ok`):
+>
+> ```bash
+> ~/.browser-visit-logger/sync-venv/bin/python \
+>   browser-visit-logger/native-host/sync_client.py --force
+> ```
 
 You can also diff a laptop against a fresh VM snapshot with
 `fetch_vm_snapshot.py` + `db_diff.py` — see

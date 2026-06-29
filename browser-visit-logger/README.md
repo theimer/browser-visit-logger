@@ -623,9 +623,22 @@ activity within ~1 minute of any interaction.
 
 `BVLHost` (the Chrome native-messaging host) checks for
 `~/.browser-visit-logger/config.json` right after writing its
-response to Chrome.  If present, it `/bin/sh -c 'nohup python3
+response to Chrome.  If present, it `/bin/sh -c 'nohup <python>
 sync_client.py … &'` — fork+detach so Chrome isn't blocked on the
-network round-trip.  `sync_client.py` itself:
+network round-trip.  Two resolution details make this work without a
+source checkout on `PATH`:
+
+- **Script path** — `install.sh` bundles `sync_client.py` (and the
+  generated gRPC stubs) into the host `.app` under
+  `Contents/Resources/native-host/`, so `BVLHost` finds it via the
+  bundle; a dev fallback to the repo checkout is tried only if the
+  bundle copy is absent.
+- **Interpreter** (`resolveSyncPython`) — `BVL_PYTHON` if set, else the
+  grpcio venv at `~/.browser-visit-logger/sync-venv/bin/python` that
+  `install_laptop.sh` provisions, else bare `python3`.  The fallback
+  rarely has `grpcio`, so the venv is what actually lets sync connect.
+
+`sync_client.py` itself:
 
 1. Acquires `~/.browser-visit-logger/sync.lock` (flock) — drops out
    immediately if another sync is already running.

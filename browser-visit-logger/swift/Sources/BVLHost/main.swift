@@ -98,7 +98,7 @@ func maybeSpawnSync() {
         return
     }
 
-    let python = ProcessInfo.processInfo.environment["BVL_PYTHON"] ?? "python3"
+    let python = resolveSyncPython()
     let escaped = scriptPath.replacingOccurrences(of: "'", with: "'\\''")
     let cmd = "nohup \(python) '\(escaped)' >/dev/null 2>&1 &"
     let proc = Process()
@@ -114,6 +114,28 @@ func maybeSpawnSync() {
     } catch {
         log.error("Failed to spawn sync_client: \(error)")
     }
+}
+
+/// Pick the interpreter used to run `sync_client.py`.  `sync_client.py`
+/// needs the `grpcio` runtime, which the ambient `python3` (system or
+/// Homebrew) almost never has — so a bare `python3` fails at channel
+/// build and no sync ever reaches the server.  Resolution order:
+///   1. `BVL_PYTHON` override (tests / power users)
+///   2. the dedicated sync venv that `install_laptop.sh` provisions with
+///      grpcio at `~/.browser-visit-logger/sync-venv/bin/python`
+///   3. bare `python3` (last-resort; sync only works if grpcio happens to
+///      be importable there)
+func resolveSyncPython() -> String {
+    if let override = ProcessInfo.processInfo.environment["BVL_PYTHON"],
+       !override.isEmpty {
+        return override
+    }
+    let venvPython = (Paths.configDir as NSString)
+        .appendingPathComponent("sync-venv/bin/python")
+    if FileManager.default.fileExists(atPath: venvPython) {
+        return venvPython
+    }
+    return "python3"
 }
 
 /// Bundle layout (install.sh):
