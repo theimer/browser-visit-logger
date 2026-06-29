@@ -270,10 +270,20 @@ def replay_into_db(conn, raw: str) -> None:
 
 def _load_stubs():
     here = os.path.dirname(os.path.abspath(__file__))
-    gen = os.path.normpath(os.path.join(
-        here, '..', '..', 'browser-visit-sync-server', 'gen', 'syncpb_py'))
-    if gen not in sys.path:
-        sys.path.insert(0, gen)
+    # Candidate stub locations, in priority order:
+    #   1. colocated with this script — how install.sh bundles them into
+    #      the host .app (Resources/native-host/syncpb_py/), so the bundled
+    #      client is self-contained and location-independent.
+    #   2. the repo checkout's generated dir — dev / source runs after
+    #      `make proto-py`.
+    candidates = [
+        os.path.join(here, 'syncpb_py'),
+        os.path.normpath(os.path.join(
+            here, '..', '..', 'browser-visit-sync-server', 'gen', 'syncpb_py')),
+    ]
+    for gen in candidates:
+        if os.path.isdir(gen) and gen not in sys.path:
+            sys.path.insert(0, gen)
     import importlib
     try:
         sync_pb2 = importlib.import_module('sync_pb2')

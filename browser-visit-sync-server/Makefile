@@ -1,7 +1,16 @@
-.PHONY: proto build build-linux test cover test-integration venv clean clean-venv
+.PHONY: proto proto-py build build-linux test cover test-integration venv clean clean-venv
 
-PROTO_DIR := proto
-GEN_DIR   := gen/syncpb
+PROTO_DIR  := proto
+GEN_DIR    := gen/syncpb
+GEN_PY_DIR := gen/syncpb_py
+
+# Interpreter used to build the Python-stub venv below.  Override if the
+# default python3 is too new for prebuilt grpcio-tools wheels (it would
+# otherwise fall back to a from-source build and fail), e.g.
+#   make proto-py PYTHON=python3.13
+PYTHON     ?= python3
+PROTO_VENV := gen/.venv-protoc
+PROTO_VPY  := $(PROTO_VENV)/bin/python
 
 # Python venv for the integration suite.  Lives inside test/ so it's
 # colocated with what uses it; gitignored.  Auto-created on first
@@ -20,6 +29,24 @@ proto:
 		--go_out=$(GEN_DIR) --go_opt=paths=source_relative \
 		--go-grpc_out=$(GEN_DIR) --go-grpc_opt=paths=source_relative \
 		$(PROTO_DIR)/sync.proto
+
+# Generate the *Python* gRPC stubs (sync_pb2, sync_pb2_grpc) that the
+# laptop sync client (browser-visit-logger/native-host/sync_client.py) and
+# browser-visit-tools/fetch_vm_snapshot.py import from gen/syncpb_py/.
+# Uses a dedicated, unpinned grpcio-tools venv so it picks up wheels for
+# the chosen PYTHON rather than the integration suite's pinned grpcio.
+proto-py: $(PROTO_VENV)/.installed
+	mkdir -p $(GEN_PY_DIR)
+	$(PROTO_VPY) -m grpc_tools.protoc \
+		-I $(PROTO_DIR) \
+		--python_out=$(GEN_PY_DIR) --grpc_python_out=$(GEN_PY_DIR) \
+		$(PROTO_DIR)/sync.proto
+
+$(PROTO_VENV)/.installed:
+	$(PYTHON) -m venv $(PROTO_VENV)
+	$(PROTO_VENV)/bin/pip install --upgrade pip
+	$(PROTO_VENV)/bin/pip install grpcio-tools
+	touch $(PROTO_VENV)/.installed
 
 build:
 	go build -o bin/sync-server ./cmd/sync-server

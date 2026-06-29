@@ -219,6 +219,27 @@ if [[ "$OS" == "Darwin" ]]; then
     "$SWIFT_VERIFIER_BIN"
   HOST_BUNDLE_EXEC="$HOST_APP/Contents/MacOS/$HOST_APP_NAME"
   VERIFIER_BUNDLE_EXEC="$VERIFIER_APP/Contents/MacOS/$VERIFIER_APP_NAME"
+
+  # Bundle the multi-laptop sync client + its generated gRPC stubs into the
+  # host .app so BVLHost finds them via the bundle path — location-
+  # independent, with no dependency on a source checkout living at a
+  # guessed path.  Best-effort: the stubs only exist after `make proto-py`
+  # (install_laptop.sh runs it before this), so a plain single-laptop
+  # install simply bundles the client without stubs and never syncs.
+  HOST_RES_NATIVE="$HOST_APP/Contents/Resources/native-host"
+  mkdir -p "$HOST_RES_NATIVE"
+  cp "$NATIVE_DIR/sync_client.py" "$HOST_RES_NATIVE/"
+  STUBS_SRC="$SCRIPT_DIR/../browser-visit-sync-server/gen/syncpb_py"
+  if [[ -f "$STUBS_SRC/sync_pb2.py" ]]; then
+    mkdir -p "$HOST_RES_NATIVE/syncpb_py"
+    cp "$STUBS_SRC"/*.py "$HOST_RES_NATIVE/syncpb_py/"
+    info "Bundled sync_client.py + gRPC stubs into the host app."
+  else
+    info "No gRPC stubs at $STUBS_SRC — bundled sync_client.py without them (multi-laptop sync needs 'make proto-py')."
+  fi
+  # Adding Resources after build_app_bundle's codesign invalidates the
+  # signature; re-sign so the bundle keeps its TCC identity.
+  codesign --force --deep --sign - "$HOST_APP" 2>/dev/null
 else
   # On Linux there's no TCC, but the Swift port is macOS-only.  Linux
   # users would need to provide their own native-messaging host; for
@@ -326,7 +347,14 @@ if [[ "$OS" == "Darwin" ]]; then
   # ProgramArguments points at the verifier bundle's executable, not at
   # python3 directly, so launchd-spawned ticks attribute to the bundle's
   # TCC identity.
+  #
+  # Skipped when BVL_SKIP_VERIFIER=1 — set by install_laptop.sh for the
+  # multi-laptop architecture, where sealing/verification run on the EC2
+  # VM and the laptop must NOT carry its own verifier LaunchAgent.
   # ---------------------------------------------------------------------
+  if [[ "${BVL_SKIP_VERIFIER:-0}" == "1" ]]; then
+    info "BVL_SKIP_VERIFIER=1 — skipping verifier LaunchAgent (multi-laptop mode; verification runs on the VM)."
+  else
   VERIFIER_PLIST="$LAUNCHAGENTS_DIR/$VERIFIER_PLIST_LABEL.plist"
   mkdir -p "$LAUNCHAGENTS_DIR"
 
@@ -361,6 +389,7 @@ PYEOF
       2>/dev/null || true
     info "Kicked the verifier — accept the Files & Folders prompt if it appears."
   fi
+  fi  # end BVL_SKIP_VERIFIER guard
 else
   info "Verifier LaunchAgent is macOS-only; skipping on $OS."
 fi
