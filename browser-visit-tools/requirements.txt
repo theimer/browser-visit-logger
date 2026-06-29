@@ -1,0 +1,9 @@
+# Runtime dependencies for the browser-visit-tools scripts.
+# Install into a venv (survives Homebrew Python upgrades):
+#   python3 -m venv .venv
+#   .venv/bin/python -m pip install -r requirements.txt
+#
+# boto3:        AWS SDK used by _bvl_aws.py (EC2/SSM control of the sync server).
+# cryptography: PEM/x509 handling in enroll_machine.py's cert path.
+boto3>=1.40
+cryptography>=42

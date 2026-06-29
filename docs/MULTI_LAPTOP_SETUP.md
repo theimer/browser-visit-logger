@@ -47,7 +47,18 @@ one of the laptops):
   — EC2 run/describe + security groups, IAM role/instance-profile create
   **including `iam:PassRole`**, SSM `SendCommand` + `StartSession`, S3 on the
   `bvl-sync-deploy-*` bucket, and STS.
-- **`boto3`** — `pip install boto3`.
+- **`boto3`** (and `cryptography`, for `enroll_machine.py`) — install into a
+  venv rather than the system Python. Homebrew's `python3` is externally
+  managed (PEP 668), and a `brew upgrade` that bumps the Python version wipes
+  the global `site-packages`, silently removing previously-installed packages:
+
+  ```bash
+  cd browser-visit-tools
+  python3 -m venv .venv
+  .venv/bin/python -m pip install -r requirements.txt
+  ```
+
+  See [Setup](../browser-visit-tools/README.md#setup) for details.
 - **Go 1.22+ and `protoc`** — to cross-compile the server binary
   (`make build-linux`). Alternatively build it in Docker via
   `browser-visit-sync-server/deploy/Dockerfile`.
@@ -62,7 +73,10 @@ one of the laptops):
 toolchain), Chrome/Chromium, and Python 3 (the system `python3` is fine).
 
 All `manage_*` commands below are run from the `browser-visit-tools/`
-directory.
+directory. They need the dependencies from the venv created above, so
+`python3` in every command means the venv's interpreter — either prefix the
+commands with `.venv/bin/` (e.g. `.venv/bin/python manage_vm.py status`) or
+run `source .venv/bin/activate` once and use `python3` as written.
 
 ### AWS credentials & permissions
 
@@ -312,8 +326,9 @@ preserved — that's also how you **add a laptop later** (mint its cert with
 python3 manage_sync_server.py enroll --machine-id laptop-a --revoke
 ```
 
-> Needs `cryptography` locally for the PEM→DER fingerprint
-> (`pip install cryptography`). The lower-level `enroll_machine.py` still
+> Needs `cryptography` locally for the PEM→DER fingerprint — already covered
+> by the venv install in [Prerequisites](#prerequisites)
+> (`requirements.txt`). The lower-level `enroll_machine.py` still
 > exists if you ever need to edit an `enrolled_machines.db` file directly; see
 > [`browser-visit-tools/README.md`](../browser-visit-tools/README.md#enroll_machinepy).
 
@@ -426,6 +441,13 @@ three phases: **(A)** getting AWS credentials to resolve, **(B)** getting the
 IAM permissions to create infra, and **(C)** the `RunInstances` call itself.
 
 ### A. AWS sign-in & credentials
+
+**`error: this tool requires boto3 (pip install boto3)`** (or
+`ModuleNotFoundError: No module named 'boto3'`) — you're running the tool with
+a Python that lacks the deps. Most often a `brew upgrade` bumped `python3` to a
+new version with an empty `site-packages`. Run it with the venv interpreter:
+`.venv/bin/python manage_sync_server.py …` (or `source .venv/bin/activate`
+first). Create the venv per [Prerequisites](#prerequisites) if you haven't.
 
 **`NoCredentialsError: Unable to locate credentials`** — boto3 found nothing
 in the chain. With SSO this almost always means either you haven't run
