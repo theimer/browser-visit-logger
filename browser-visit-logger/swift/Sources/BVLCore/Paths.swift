@@ -45,26 +45,43 @@ public enum Paths {
     ///
     /// The default is built under the macOS Google Drive mount, which is
     /// named `GoogleDrive-<account>` (e.g.
-    /// `GoogleDrive-jane@gmail.com`) — NOT a bare `GoogleDrive`.  The
-    /// account is resolved via `gdriveAccount()`; if it is unknown we
-    /// fall back to the unqualified `GoogleDrive`, which will almost
-    /// certainly be wrong, so `install_laptop.sh` records the account in
-    /// the machine config at install time.
-    public static var archiveSnapshotsDir: String {
+    /// `GoogleDrive-jane@gmail.com`) — NOT a bare `GoogleDrive`.  We do
+    /// NOT fall back to the unqualified name when the account is unknown:
+    /// that directory isn't a Drive mount, so archiving into it would
+    /// strand snapshots in a local-only tree Google Drive never syncs
+    /// (and the mover would then delete the staged source — silent data
+    /// loss).  Instead this throws `PathsError.gdriveArchiveUnconfigured`
+    /// so callers fail safely: the mover records a `mover_errors` row and
+    /// leaves the source staged for the next pass; read/verify passes
+    /// skip.  The account is recorded by `install_laptop.sh` in the
+    /// machine config; `BVL_GDRIVE_ACCOUNT` overrides it.
+    ///
+    /// When the account-derived mount is required, its `.../My Drive`
+    /// base must already exist (Google Drive creates it) — we only ever
+    /// create subdirectories under it.  If it's absent (Drive signed
+    /// out, or a stale/wrong account) this also throws rather than
+    /// fabricating the tree.  An explicit `BVL_GDRIVE_SNAPSHOTS_DIR`
+    /// override is trusted as-is (tests, custom setups) and not checked.
+    public static func archiveSnapshotsDir() throws -> String {
         if let v = ProcessInfo.processInfo.environment["BVL_GDRIVE_SNAPSHOTS_DIR"] {
             return v
         }
         if let v = ProcessInfo.processInfo.environment["BVL_ICLOUD_SNAPSHOTS_DIR"] {
             return v
         }
-        let cloudDir: String
-        if let account = gdriveAccount(), !account.isEmpty {
-            cloudDir = "GoogleDrive-\(account)"
-        } else {
-            cloudDir = "GoogleDrive"
+        guard let account = gdriveAccount(), !account.isEmpty else {
+            throw PathsError.gdriveArchiveUnconfigured
         }
-        return (home as NSString).appendingPathComponent(
-            "Library/CloudStorage/\(cloudDir)/My Drive/browser-visit-logger/snapshots")
+        let mountBase = (home as NSString).appendingPathComponent(
+            "Library/CloudStorage/GoogleDrive-\(account)/My Drive")
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: mountBase, isDirectory: &isDir),
+              isDir.boolValue
+        else {
+            throw PathsError.gdriveMountMissing(mountBase)
+        }
+        return (mountBase as NSString)
+            .appendingPathComponent("browser-visit-logger/snapshots")
     }
 
     /// The user's Google account that names the local Drive mount
@@ -73,8 +90,7 @@ public enum Paths {
     ///   2. `gdrive_account` field in `machineConfigFile` — the durable
     ///      channel that reaches the Chrome-spawned host, which inherits
     ///      no BVL_* environment.
-    /// Returns nil when unknown (callers fall back to the unqualified
-    /// mount name).
+    /// Returns nil when unknown.
     public static func gdriveAccount() -> String? {
         if let env = ProcessInfo.processInfo.environment["BVL_GDRIVE_ACCOUNT"],
            !env.isEmpty {
@@ -92,10 +108,6 @@ public enum Paths {
         return account
     }
 
-    /// Deprecated alias; new code should call `archiveSnapshotsDir`.
-    /// Retained because external Swift callers may still reference it
-    /// during the transition.
-    public static var icloudSnapshotsDir: String { archiveSnapshotsDir }
 
     public static var moverErrorThreshold: Int {
         Int(env("BVL_MOVER_ERROR_THRESHOLD", "3")) ?? 3
@@ -220,5 +232,32 @@ public enum Paths {
     /// Marker file written when we can't reach Notification Center.
     public static var attentionFile: String {
         (home as NSString).appendingPathComponent("browser-visits-mover-needs-attention")
+    }
+}
+
+/// Raised by `Paths.archiveSnapshotsDir()` when it cannot resolve a real,
+/// cloud-synced Google Drive archive root.  Callers treat this as a
+/// recorded error (mover) or a skipped pass (verifier), never as a
+/// reason to fabricate a local-only directory.
+public enum PathsError: Error, CustomStringConvertible {
+    /// No `BVL_GDRIVE_SNAPSHOTS_DIR` override and no Google account to
+    /// build the `GoogleDrive-<account>` mount path from.
+    case gdriveArchiveUnconfigured
+    /// The account is known but its `.../My Drive` mount is absent
+    /// (Drive signed out, or a stale/wrong account).
+    case gdriveMountMissing(String)
+
+    public var description: String {
+        switch self {
+        case .gdriveArchiveUnconfigured:
+            return "Google Drive snapshot archive is not configured: set the "
+                + "account with `install_laptop.sh --gdrive-account <you>` "
+                + "(or the BVL_GDRIVE_ACCOUNT / BVL_GDRIVE_SNAPSHOTS_DIR env "
+                + "vars). Refusing to archive into a non-synced local path."
+        case .gdriveMountMissing(let base):
+            return "Google Drive mount \(base) does not exist: is Drive signed "
+                + "in for this account? Refusing to archive into a non-synced "
+                + "local path."
+        }
     }
 }

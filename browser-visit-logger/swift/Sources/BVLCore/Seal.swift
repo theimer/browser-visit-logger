@@ -44,6 +44,13 @@ public enum Seal {
         _ db: Database, dryRun: Bool = false, log: HostLog?
     ) {
         let today = todayUTCString()
+        let archiveRoot: String
+        do {
+            archiveRoot = try Paths.archiveSnapshotsDir()
+        } catch {
+            log?.error("Seal: archive root unavailable: \(error); skipping pass")
+            return
+        }
         let dates: [String]
         do {
             dates = try db.queryAll("""
@@ -56,7 +63,7 @@ public enum Seal {
             return
         }
         for date in dates {
-            let subdir = (Paths.icloudSnapshotsDir as NSString)
+            let subdir = (archiveRoot as NSString)
                 .appendingPathComponent(date)
             // The seal pass tolerates a missing date subdir — covers
             // activity-only days (host-inserted snapshots row, no

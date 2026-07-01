@@ -62,8 +62,10 @@ public enum Sweep {
             }
 
             if dryRun {
+                let root = (try? Paths.archiveSnapshotsDir())
+                    ?? "(archive unconfigured)"
                 log?.info("[dry-run] would move \(source) -> "
-                          + "\(Paths.icloudSnapshotsDir)/\(dateStr)/\(name)")
+                          + "\(root)/\(dateStr)/\(name)")
                 continue
             }
             Archive.moveOne(
