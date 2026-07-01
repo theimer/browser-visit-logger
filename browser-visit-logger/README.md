@@ -799,7 +799,8 @@ env vars; env vars override defaults.
 | `BVL_VERIFIER_LOG` | `~/browser-visits-verifier.log` | reset (verifier writes via LaunchAgent stdout/stderr) |
 | `BVL_DB_FILE` | `~/browser-visits.db` | host, verifier, sealer, rebuilder, reset |
 | `BVL_DOWNLOADS_SNAPSHOTS_DIR` | `~/Downloads/browser-visit-snapshots` | host (synchronous archive source), verifier (sweep source), reset |
-| `BVL_GDRIVE_SNAPSHOTS_DIR` | `~/Library/CloudStorage/GoogleDrive/My Drive/browser-visit-logger/snapshots` | host (multi-laptop archive destination); preferred over the legacy name below |
+| `BVL_GDRIVE_SNAPSHOTS_DIR` | `~/Library/CloudStorage/GoogleDrive-<account>/My Drive/browser-visit-logger/snapshots` | host (multi-laptop archive destination); preferred over the legacy name below. `<account>` comes from `BVL_GDRIVE_ACCOUNT` or `gdrive_account` in `~/.browser-visit-logger/config.json` |
+| `BVL_GDRIVE_ACCOUNT` | (none) | host — the Google account that names the local `GoogleDrive-<account>` mount; recorded by `install_laptop.sh`. Only used to build the default above when `BVL_GDRIVE_SNAPSHOTS_DIR` is unset |
 | `BVL_ICLOUD_SNAPSHOTS_DIR` | (same default as above, when `BVL_GDRIVE_SNAPSHOTS_DIR` unset) | host, verifier, sealer, rebuilder — alias retained for backwards compat |
 | `BVL_MOVER_MIN_AGE_SECONDS` | `60` | verifier (sweep age threshold) |
 | `BVL_MOVER_ERROR_THRESHOLD` | `3` | verifier + sync_client (consecutive failures before persistent-error notification) |

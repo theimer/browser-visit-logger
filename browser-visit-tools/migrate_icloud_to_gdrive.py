@@ -21,7 +21,7 @@ Usage
 -----
     migrate_icloud_to_gdrive.py \\
         --src ~/Documents/browser-visit-logger/snapshots \\
-        --dst "~/Library/CloudStorage/GoogleDrive/My Drive/browser-visit-logger/snapshots" \\
+        --dst "~/Library/CloudStorage/GoogleDrive-<account>/My Drive/browser-visit-logger/snapshots" \\
         --db  ~/browser-visits.db
 
     # Dry run — print what would be copied / what SQL would be emitted

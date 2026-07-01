@@ -241,13 +241,13 @@ it.
 # Dry run first to see what would happen
 python3 migrate_icloud_to_gdrive.py --dry-run \
     --src ~/Documents/browser-visit-logger/snapshots \
-    --dst "~/Library/CloudStorage/GoogleDrive/My Drive/browser-visit-logger/snapshots" \
+    --dst "~/Library/CloudStorage/GoogleDrive-<account>/My Drive/browser-visit-logger/snapshots" \
     --db  ~/browser-visits.db
 
 # Run for real
 python3 migrate_icloud_to_gdrive.py \
     --src ~/Documents/browser-visit-logger/snapshots \
-    --dst "~/Library/CloudStorage/GoogleDrive/My Drive/browser-visit-logger/snapshots" \
+    --dst "~/Library/CloudStorage/GoogleDrive-<account>/My Drive/browser-visit-logger/snapshots" \
     --db  ~/browser-visits.db
 ```
 

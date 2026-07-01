@@ -42,6 +42,14 @@ public enum Paths {
     /// the preferred env var; `BVL_ICLOUD_SNAPSHOTS_DIR` is honored as
     /// an alias for backwards compatibility with existing installs and
     /// tests.
+    ///
+    /// The default is built under the macOS Google Drive mount, which is
+    /// named `GoogleDrive-<account>` (e.g.
+    /// `GoogleDrive-jane@gmail.com`) — NOT a bare `GoogleDrive`.  The
+    /// account is resolved via `gdriveAccount()`; if it is unknown we
+    /// fall back to the unqualified `GoogleDrive`, which will almost
+    /// certainly be wrong, so `install_laptop.sh` records the account in
+    /// the machine config at install time.
     public static var archiveSnapshotsDir: String {
         if let v = ProcessInfo.processInfo.environment["BVL_GDRIVE_SNAPSHOTS_DIR"] {
             return v
@@ -49,8 +57,39 @@ public enum Paths {
         if let v = ProcessInfo.processInfo.environment["BVL_ICLOUD_SNAPSHOTS_DIR"] {
             return v
         }
+        let cloudDir: String
+        if let account = gdriveAccount(), !account.isEmpty {
+            cloudDir = "GoogleDrive-\(account)"
+        } else {
+            cloudDir = "GoogleDrive"
+        }
         return (home as NSString).appendingPathComponent(
-            "Library/CloudStorage/GoogleDrive/My Drive/browser-visit-logger/snapshots")
+            "Library/CloudStorage/\(cloudDir)/My Drive/browser-visit-logger/snapshots")
+    }
+
+    /// The user's Google account that names the local Drive mount
+    /// (`GoogleDrive-<account>`).  Resolution order:
+    ///   1. `BVL_GDRIVE_ACCOUNT` env var (tests / recovery / overrides).
+    ///   2. `gdrive_account` field in `machineConfigFile` — the durable
+    ///      channel that reaches the Chrome-spawned host, which inherits
+    ///      no BVL_* environment.
+    /// Returns nil when unknown (callers fall back to the unqualified
+    /// mount name).
+    public static func gdriveAccount() -> String? {
+        if let env = ProcessInfo.processInfo.environment["BVL_GDRIVE_ACCOUNT"],
+           !env.isEmpty {
+            return env
+        }
+        return readGDriveAccountFromConfig()
+    }
+
+    private static func readGDriveAccountFromConfig() -> String? {
+        guard let data = FileManager.default.contents(atPath: machineConfigFile),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let account = obj["gdrive_account"] as? String,
+              !account.isEmpty
+        else { return nil }
+        return account
     }
 
     /// Deprecated alias; new code should call `archiveSnapshotsDir`.

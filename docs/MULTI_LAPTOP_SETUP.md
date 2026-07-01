@@ -388,7 +388,7 @@ Files & Folders (TCC) prompts the first time you tag a page.
 > ```bash
 > python3 browser-visit-tools/migrate_icloud_to_gdrive.py --dry-run \
 >     --src ~/Documents/browser-visit-logger/snapshots \
->     --dst "~/Library/CloudStorage/GoogleDrive/My Drive/browser-visit-logger/snapshots" \
+>     --dst "~/Library/CloudStorage/GoogleDrive-<account>/My Drive/browser-visit-logger/snapshots" \
 >     --db  ~/browser-visits.db
 > ```
 >
