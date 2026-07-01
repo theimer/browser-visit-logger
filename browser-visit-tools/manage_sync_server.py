@@ -85,7 +85,17 @@ except Exception as e:
 
 
 def _rclone_conf(root_folder_id):
-    """rclone.conf body for the Drive remote, keyed off the service account."""
+    """rclone.conf body for the Drive remote, keyed off the service account.
+
+    `scope = drive` is the token's capability (read/write), NOT which files
+    it can see: a service account can only reach items explicitly shared with
+    its address.  We share only the `snapshots` folder, so that is the whole
+    universe the VM can touch.  (The narrower `drive.file` scope is unusable
+    here — it restricts to files the app itself created, but the snapshots are
+    created by the laptop, a different identity.)  `root_folder_id` pins the
+    remote root to that shared folder so the mount lands directly on the
+    date-directory tree.
+    """
     return ('[gdrive]\n'
             'type = drive\n'
             'scope = drive\n'
@@ -444,7 +454,8 @@ def _build_parser():
     pdr.add_argument('--service-account', required=True,
                      help='path to the Google service-account JSON key')
     pdr.add_argument('--root-folder-id', required=True,
-                     help='Drive folder id of the browser-visit-logger root')
+                     help='Drive folder id of the shared `snapshots` folder '
+                          '(from its Drive URL)')
 
     with_region(sub.add_parser(
         'drive-status',

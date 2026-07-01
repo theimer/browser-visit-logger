@@ -8,7 +8,10 @@ Wants=network-online.target
 # Type=notify: rclone signals readiness once the FUSE mount is live, so units
 # ordered After= this one (e.g. the snapshot verifier) don't race the mount.
 Type=notify
-ExecStart=/usr/bin/rclone mount gdrive:snapshots /mnt/gdrive-snapshots \
+# Mounts the remote root, which the rclone.conf pins to the shared `snapshots`
+# folder via root_folder_id.  Least privilege: the service account is shared
+# only that folder, so the mount can see nothing else in the user's Drive.
+ExecStart=/usr/bin/rclone mount gdrive: /mnt/gdrive-snapshots \
   --config /etc/browser-visit-sync/rclone.conf \
   --dir-cache-time 1m \
   --vfs-cache-mode writes \
