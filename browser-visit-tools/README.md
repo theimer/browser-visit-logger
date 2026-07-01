@@ -365,6 +365,8 @@ make -C ../browser-visit-sync-server build-linux GOARCH=amd64   # or arm64
 | `logs` | `journalctl` **snapshot** (`--lines`, `--since`); for a live tail use `aws ssm start-session` |
 | `health` | service active + gRPC port answers + disk under 90 % |
 | `enroll` | enrol (`--machine-id` + `--cert`), `--revoke`, or `--list` laptops in the server's `enrolled_machines.db` in place over SSM — fingerprint computed locally, no restart (the server re-reads the allowlist per request) |
+| `provision-drive` | mount the Google Drive snapshot archive on the VM via `rclone` + a service-account key (`--service-account`, `--root-folder-id`); installs + enables the `gdrive-snapshots` systemd mount unit (idempotent). See [issue #47](https://github.com/theimer/browser-visit-logger/issues/47) |
+| `drive-status` | read-only diagnostic: is Drive mounted, is the mount service up, and does the canonical DB show snapshot rows |
 
 ```bash
 # First-boot setup (TLS material passed as local PEM paths)
@@ -383,6 +385,11 @@ python3 manage_sync_server.py enroll --machine-id laptop-a \
     --cert ~/.browser-visit-logger/ca/laptop-a.crt
 python3 manage_sync_server.py enroll --list
 python3 manage_sync_server.py logs --lines 50
+
+# Mount the Google Drive snapshot archive on the VM, then verify it
+python3 manage_sync_server.py provision-drive \
+    --service-account gdrive-sa.json --root-folder-id 1AbC...xyz
+python3 manage_sync_server.py drive-status
 ```
 
 `provision --and-deploy --binary <path>` chains a deploy after

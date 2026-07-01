@@ -11,6 +11,13 @@ Subcommands
                service.  Idempotent; safe to re-run.
     deploy     Cross-compiled binary → S3 → VM, install to
                /usr/local/bin/sync-server, restart the service.
+    provision-drive
+               Mount the Google Drive snapshot archive on the VM via
+               rclone + a service-account key, and install the systemd
+               mount unit.  Idempotent.  (See issue #47.)
+    drive-status
+               Report whether Drive is mounted, the mount service is up,
+               and the canonical DB holds snapshot rows.  Read-only.
     start      systemctl start sync-server
     stop       systemctl stop sync-server
     restart    systemctl restart sync-server
@@ -40,8 +47,9 @@ import _bvl_aws as aws
 import enroll_machine
 
 _HERE = Path(__file__).resolve().parent
-_UNIT_FILE = _HERE.parent / 'browser-visit-sync-server' / 'deploy' / \
-    'sync-server.service'
+_DEPLOY = _HERE.parent / 'browser-visit-sync-server' / 'deploy'
+_UNIT_FILE = _DEPLOY / 'sync-server.service'
+_MOUNT_UNIT_FILE = _DEPLOY / 'gdrive-snapshots.service'
 
 # state ``arch`` → Go GOARCH token expected in the built binary's name.
 _GOARCH = {'x86_64': 'amd64', 'arm64': 'arm64'}
@@ -49,6 +57,40 @@ _GOARCH = {'x86_64': 'amd64', 'arm64': 'arm64'}
 _DATA_DIR = '/var/lib/browser-visit-sync'
 _ETC_DIR = '/etc/browser-visit-sync'
 _ENROLLED_DB = f'{_DATA_DIR}/enrolled_machines.db'
+_SNAPSHOTS_DB = f'{_DATA_DIR}/browser-visits.db'
+
+# Google Drive snapshot mount (see issue #47).  rclone reaches Drive with a
+# service-account key so the VM needs no interactive OAuth; the mounted tree is
+# where the (future) VM-side verifier seals days and writes MANIFEST.tsv.
+_GDRIVE_MOUNT = '/mnt/gdrive-snapshots'
+_GDRIVE_SA = f'{_ETC_DIR}/gdrive-sa.json'
+_RCLONE_CONF = f'{_ETC_DIR}/rclone.conf'
+
+# Read-only DB probe for `drive-status`.  Uses the sqlite3 module (guaranteed on
+# AL2023) rather than the sqlite3 CLI (not installed), mirroring _ENROLL_PY.
+# argv: <db>.  Opened read-only so a concurrent write never blocks the probe.
+_SNAPSHOT_SUMMARY_PY = '''\
+import sqlite3, sys
+try:
+    c = sqlite3.connect("file:%s?mode=ro" % sys.argv[1], uri=True)
+    rows = c.execute("SELECT date, sealed FROM snapshots "
+                     "ORDER BY date DESC LIMIT 5").fetchall()
+    if not rows:
+        print("  (snapshots table empty)")
+    for d, s in rows:
+        print("  %s  sealed=%s" % (d, s))
+except Exception as e:
+    print("  (query failed: %s)" % e)
+'''
+
+
+def _rclone_conf(root_folder_id):
+    """rclone.conf body for the Drive remote, keyed off the service account."""
+    return ('[gdrive]\n'
+            'type = drive\n'
+            'scope = drive\n'
+            f'service_account_file = {_GDRIVE_SA}\n'
+            f'root_folder_id = {root_folder_id}\n')
 
 # Stdlib-only program run on the VM (Amazon Linux 2023 ships python3) to
 # mutate the server's allowlist in place.  argv: <db> <op> [machine_id] [fp].
@@ -159,6 +201,66 @@ def cmd_provision(args):
     if rc == 0 and args.and_deploy:
         return _deploy(region, ssm, instance_id, args)
     return rc
+
+
+def cmd_provision_drive(args):
+    """Mount the Google Drive snapshot archive on the VM via rclone + a
+    service-account key, and install the systemd mount unit.  Idempotent."""
+    sa = Path(os.path.expanduser(args.service_account))
+    if not sa.is_file():
+        print(f"error: service account key not found: {sa}", file=sys.stderr)
+        return 1
+    region, ssm, instance_id = _ssm_target(args)
+    s3, bucket = _stage_clients(region)
+    aws.upload_file(s3, _MOUNT_UNIT_FILE, bucket,
+                    'deploy/gdrive-snapshots.service')
+    aws.upload_file(s3, sa, bucket, 'gdrive/gdrive-sa.json', encrypt=True)
+    conf = _rclone_conf(args.root_folder_id)
+    script = [
+        'set -euo pipefail',
+        'command -v rclone >/dev/null || dnf install -y rclone fuse3',
+        # The mountpoint is made by root and handed to the service account, so
+        # rclone (running as bvlsync) can mount onto a directory it owns.
+        f'mkdir -p {_GDRIVE_MOUNT}',
+        f'chown bvlsync:bvlsync {_GDRIVE_MOUNT}',
+        f'aws s3 cp s3://{bucket}/gdrive/gdrive-sa.json {_GDRIVE_SA}',
+        f'printf %s {shlex.quote(conf)} > {_RCLONE_CONF}',
+        f'aws s3 cp s3://{bucket}/deploy/gdrive-snapshots.service '
+        '/etc/systemd/system/gdrive-snapshots.service',
+        # The key and remote config are secrets: owned by the service account,
+        # unreadable to anyone else.
+        f'chown bvlsync:bvlsync {_GDRIVE_SA} {_RCLONE_CONF}',
+        f'chmod 400 {_GDRIVE_SA}',
+        f'chmod 600 {_RCLONE_CONF}',
+        'systemctl daemon-reload',
+        'systemctl enable --now gdrive-snapshots',
+    ]
+    rc = _surface(aws.run_remote(ssm, instance_id, script,
+                                 comment='bvl provision-drive'))
+    if rc == 0:
+        print(f"drive mount provisioned at {_GDRIVE_MOUNT}; "
+              "run `drive-status` to verify")
+    return rc
+
+
+def cmd_drive_status(args):
+    """Diagnostic: is Drive mounted, is the mount service up, and does the
+    canonical DB show snapshot rows?  Always prints; never mutates."""
+    _region, ssm, instance_id = _ssm_target(args)
+    script = [
+        f'mountpoint -q {_GDRIVE_MOUNT} '
+        f'&& echo "mount: mounted at {_GDRIVE_MOUNT}" '
+        '|| echo "mount: NOT mounted"',
+        'echo "service: $(systemctl is-active gdrive-snapshots.service '
+        '2>/dev/null || echo absent)"',
+        f'echo "recent snapshot days on Drive:"; '
+        f'ls -1 {_GDRIVE_MOUNT} 2>/dev/null | tail -5 '
+        '|| echo "  (none / unreadable)"',
+        'echo "snapshot rows in canonical DB:"; '
+        f'python3 -c {shlex.quote(_SNAPSHOT_SUMMARY_PY)} {_SNAPSHOTS_DB}',
+    ]
+    return _surface(aws.run_remote(ssm, instance_id, script,
+                                   comment='bvl drive-status'))
 
 
 def _check_arch(binary):
@@ -300,6 +402,7 @@ _DISPATCH = {
     'provision': cmd_provision, 'deploy': cmd_deploy, 'start': cmd_start,
     'stop': cmd_stop, 'restart': cmd_restart, 'status': cmd_status,
     'logs': cmd_logs, 'health': cmd_health, 'enroll': cmd_enroll,
+    'provision-drive': cmd_provision_drive, 'drive-status': cmd_drive_status,
 }
 
 
@@ -334,6 +437,18 @@ def _build_parser():
                            ('status', 'service status'),
                            ('health', 'end-to-end health probe')):
         with_region(sub.add_parser(name, help=helptext))
+
+    pdr = with_region(sub.add_parser(
+        'provision-drive',
+        help='mount the Google Drive snapshot archive on the VM (rclone)'))
+    pdr.add_argument('--service-account', required=True,
+                     help='path to the Google service-account JSON key')
+    pdr.add_argument('--root-folder-id', required=True,
+                     help='Drive folder id of the browser-visit-logger root')
+
+    with_region(sub.add_parser(
+        'drive-status',
+        help='report whether Drive is mounted and holds snapshot data'))
 
     pl = with_region(sub.add_parser('logs', help='journalctl snapshot'))
     pl.add_argument('--lines', type=int, default=100,

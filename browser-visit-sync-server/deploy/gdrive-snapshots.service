@@ -1,0 +1,26 @@
+[Unit]
+Description=rclone mount of the Google Drive snapshot archive
+Documentation=https://github.com/theimer/browser-visit-logger/issues/47
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Type=notify: rclone signals readiness once the FUSE mount is live, so units
+# ordered After= this one (e.g. the snapshot verifier) don't race the mount.
+Type=notify
+ExecStart=/usr/bin/rclone mount gdrive:snapshots /mnt/gdrive-snapshots \
+  --config /etc/browser-visit-sync/rclone.conf \
+  --dir-cache-time 1m \
+  --vfs-cache-mode writes \
+  --umask 002
+ExecStop=/bin/fusermount3 -u /mnt/gdrive-snapshots
+Restart=on-failure
+RestartSec=10s
+# Runs as the same service account as sync-server so the mounted tree is owned
+# by (and readable/writable to) the account the verifier will run under. The
+# mountpoint itself is created and chowned to bvlsync by `provision-drive`.
+User=bvlsync
+Group=bvlsync
+
+[Install]
+WantedBy=multi-user.target
