@@ -232,6 +232,9 @@ def test_drive_status_is_read_only(monkeypatch):
     assert mss.cmd_drive_status(_args('drive-status')) == 0
     cmds = '\n'.join(runner.last_commands())
     assert f'mountpoint -q {mss._GDRIVE_MOUNT}' in cmds
+    # Probed as the mount owner, not root — a root-run mountpoint on an
+    # owner-only FUSE mount gets EACCES and falsely reports "NOT mounted".
+    assert 'runuser -u bvlsync -- mountpoint' in cmds
     assert 'is-active gdrive-snapshots.service' in cmds
     assert 'SELECT date, sealed FROM snapshots' in cmds
     # a diagnostic never mutates: no writes, no chown, no service control.

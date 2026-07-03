@@ -257,15 +257,20 @@ def cmd_drive_status(args):
     """Diagnostic: is Drive mounted, is the mount service up, and does the
     canonical DB show snapshot rows?  Always prints; never mutates."""
     _region, ssm, instance_id = _ssm_target(args)
+    # The rclone FUSE mount is owner-only (no allow_other), so probe it AS the
+    # mount owner (bvlsync).  SSM runs this script as root, and root touching a
+    # non-allow_other FUSE mount gets EACCES — a plain `mountpoint`/`ls` would
+    # falsely report "NOT mounted" even when the mount is live for bvlsync
+    # (which is the account the verifier runs under, so owner-only is enough).
     script = [
-        f'mountpoint -q {_GDRIVE_MOUNT} '
+        f'runuser -u bvlsync -- mountpoint -q {_GDRIVE_MOUNT} '
         f'&& echo "mount: mounted at {_GDRIVE_MOUNT}" '
         '|| echo "mount: NOT mounted"',
         'echo "service: $(systemctl is-active gdrive-snapshots.service '
         '2>/dev/null || echo absent)"',
-        f'echo "recent snapshot days on Drive:"; '
-        f'ls -1 {_GDRIVE_MOUNT} 2>/dev/null | tail -5 '
-        '|| echo "  (none / unreadable)"',
+        'echo "recent snapshot days on Drive:"; '
+        f'days=$(runuser -u bvlsync -- ls -1 {_GDRIVE_MOUNT} 2>/dev/null '
+        '| tail -5); echo "${days:-  (none yet)}"',
         'echo "snapshot rows in canonical DB:"; '
         f'python3 -c {shlex.quote(_SNAPSHOT_SUMMARY_PY)} {_SNAPSHOTS_DB}',
     ]
