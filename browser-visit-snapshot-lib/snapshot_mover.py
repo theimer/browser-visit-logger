@@ -108,32 +108,47 @@ _LOG_FILENAME_RE = re.compile(r'^browser-visits-(\d{4}-\d{2}-\d{2})\.log$')
 
 
 # ---------------------------------------------------------------------------
-# Schema for the `snapshots` table — co-owned by host.py (Python) and
-# the Swift production code.  Sealer needs to ensure it exists before
-# upserting.
+# DDL for the two tables the sealer manages.  Kept self-contained (no
+# dependency on host.py / schema.sql) so this shared library works wherever
+# it runs — including the VM, which has neither.  These mirror the canonical
+# definitions in browser-visit-logger/schema.sql (and, for snapshots, the
+# sync-server's store.go); all three are trivial and stable.  IF NOT EXISTS
+# makes them idempotent and harmless where the table already exists (e.g. the
+# VM, where the sync-server creates `snapshots`).
 # ---------------------------------------------------------------------------
 
-def _ensure_snapshots_table(conn: sqlite3.Connection) -> None:
-    """Create the snapshots table if absent.
+_SNAPSHOTS_DDL = """\
+CREATE TABLE IF NOT EXISTS snapshots (
+    date   TEXT PRIMARY KEY,
+    sealed INTEGER NOT NULL DEFAULT 0
+);"""
 
-    DDL lives in schema.sql; we just exec it via host._load_schema_sql.
-    Idempotent because every CREATE there uses IF NOT EXISTS.
-    """
-    import host
-    conn.executescript(host._load_schema_sql())
+_MOVER_ERRORS_DDL = """\
+CREATE TABLE IF NOT EXISTS mover_errors (
+    key        TEXT PRIMARY KEY,
+    operation  TEXT NOT NULL,
+    target     TEXT NOT NULL,
+    message    TEXT NOT NULL,
+    first_seen TEXT NOT NULL,
+    last_seen  TEXT NOT NULL,
+    attempts   INTEGER NOT NULL DEFAULT 1,
+    notified   INTEGER NOT NULL DEFAULT 0,
+    immediate  INTEGER NOT NULL DEFAULT 0
+);"""
+
+
+def _ensure_snapshots_table(conn: sqlite3.Connection) -> None:
+    """Create the snapshots table if absent.  Idempotent."""
+    conn.executescript(_SNAPSHOTS_DDL)
     conn.commit()
 
 
-# ---------------------------------------------------------------------------
-# Schema for the `mover_errors` table — tracks unresolved failures.
 # Reached transitively from `_build_manifest_rows` via `_try_record_error`,
-# so the sealer needs the table present before sealing a dir that has
-# any non-conforming filenames or orphan files.  DDL lives in schema.sql.
-# ---------------------------------------------------------------------------
-
+# so the sealer needs this table present before sealing a dir that has any
+# non-conforming filenames or orphan files.
 def _ensure_mover_errors_table(conn: sqlite3.Connection) -> None:
-    import host
-    conn.executescript(host._load_schema_sql())
+    """Create the mover_errors table if absent.  Idempotent."""
+    conn.executescript(_MOVER_ERRORS_DDL)
     conn.commit()
 
 
