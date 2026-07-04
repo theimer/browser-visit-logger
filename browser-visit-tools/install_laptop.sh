@@ -8,8 +8,9 @@
 #      the BVLHost + extension manifest, with BVL_SKIP_VERIFIER=1 so
 #      install.sh does not re-install the verifier LaunchAgent.
 #   3. Materialize ~/.browser-visit-logger/config.json with the
-#      machine_id (sanitized LocalHostName), and ensure mTLS material
-#      is in place under ~/.browser-visit-logger/tls/.
+#      machine_id (sanitized LocalHostName) and the Google account that
+#      names the local Drive mount (GoogleDrive-<account>), and ensure
+#      mTLS material is in place under ~/.browser-visit-logger/tls/.
 #   4. Provision the sync runtime: a grpcio venv at
 #      ~/.browser-visit-logger/sync-venv (which BVLHost prefers when
 #      spawning sync_client.py) and the generated gRPC Python stubs.
@@ -17,6 +18,10 @@
 # Usage:
 #   bash browser-visit-tools/install_laptop.sh
 #   bash browser-visit-tools/install_laptop.sh --server bvl-vm.example.com:50443
+#   bash browser-visit-tools/install_laptop.sh --gdrive-account jane@gmail.com
+#
+# When --gdrive-account is omitted the script prompts for it (the Google
+# account is needed to locate the GoogleDrive-<account> Drive mount).
 
 set -euo pipefail
 
@@ -27,15 +32,26 @@ CONFIG_FILE="$CONFIG_DIR/config.json"
 TLS_DIR="$CONFIG_DIR/tls"
 
 SERVER=""
+GDRIVE_ACCOUNT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --server) SERVER="$2"; shift 2 ;;
+    --gdrive-account) GDRIVE_ACCOUNT="$2"; shift 2 ;;
     -h|--help) sed -n '1,/^set -euo/p' "$0" | sed '$d'; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
 
 info() { echo "[install-laptop] $*"; }
+
+# The macOS Google Drive mount is named GoogleDrive-<account>, so we need
+# the user's Google account to locate the shared snapshot archive.  Ask
+# for it when it wasn't supplied on the command line and we have a
+# terminal; otherwise leave it blank (it can be added to config.json
+# later).
+if [[ -z "$GDRIVE_ACCOUNT" && -t 0 ]]; then
+  read -r -p "[install-laptop] Google account for your Google Drive (e.g. jane@gmail.com): " GDRIVE_ACCOUNT
+fi
 
 info "Step 1/3: removing legacy verifier LaunchAgent (if present)"
 bash "$SCRIPT_DIR/uninstall_laptop_legacy.sh"
@@ -97,6 +113,20 @@ fi
 
 if [[ -f "$CONFIG_FILE" ]]; then
   info "config already exists at $CONFIG_FILE — leaving machine_id unchanged"
+  # Backfill the Google account into an existing config if the user
+  # supplied one and it isn't already recorded, so upgrades pick up the
+  # correct GoogleDrive-<account> archive path without a reinstall.
+  if [[ -n "$GDRIVE_ACCOUNT" ]]; then
+    python3 - <<PY
+import json, pathlib
+p = pathlib.Path("$CONFIG_FILE")
+cfg = json.loads(p.read_text())
+if cfg.get("gdrive_account") != "$GDRIVE_ACCOUNT":
+    cfg["gdrive_account"] = "$GDRIVE_ACCOUNT"
+    p.write_text(json.dumps(cfg, indent=2, sort_keys=True) + "\n")
+    print("[install-laptop] set gdrive_account=$GDRIVE_ACCOUNT in $CONFIG_FILE")
+PY
+  fi
 else
   python3 - <<PY
 import json, datetime, pathlib
@@ -106,6 +136,8 @@ cfg = {
 }
 if "$SERVER":
     cfg["sync_server"] = "$SERVER"
+if "$GDRIVE_ACCOUNT":
+    cfg["gdrive_account"] = "$GDRIVE_ACCOUNT"
 pathlib.Path("$CONFIG_FILE").write_text(json.dumps(cfg, indent=2, sort_keys=True) + "\n")
 PY
   info "wrote $CONFIG_FILE with machine_id=$MACHINE_ID"

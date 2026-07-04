@@ -34,6 +34,14 @@ public enum OrphanLog {
     public static func mergePass(_ db: Database, log: HostLog?) {
         let dir = Paths.logDir
         guard FileManager.default.fileExists(atPath: dir) else { return }
+        let archiveRoot: String
+        do {
+            archiveRoot = try Paths.archiveSnapshotsDir()
+        } catch {
+            log?.error("orphan-log-merge: archive root unavailable: \(error); "
+                       + "skipping pass")
+            return
+        }
         let todayISO = todayUTCString()
 
         let entries: [String]
@@ -51,7 +59,7 @@ public enum OrphanLog {
                   dateISO < todayISO
             else { continue }
             let src = (dir as NSString).appendingPathComponent(entry)
-            let dateSubdir = (Paths.icloudSnapshotsDir as NSString)
+            let dateSubdir = (archiveRoot as NSString)
                 .appendingPathComponent(dateISO)
             let dst = (dateSubdir as NSString).appendingPathComponent(entry)
 

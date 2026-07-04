@@ -241,13 +241,13 @@ it.
 # Dry run first to see what would happen
 python3 migrate_icloud_to_gdrive.py --dry-run \
     --src ~/Documents/browser-visit-logger/snapshots \
-    --dst "~/Library/CloudStorage/GoogleDrive/My Drive/browser-visit-logger/snapshots" \
+    --dst "~/Library/CloudStorage/GoogleDrive-<account>/My Drive/browser-visit-logger/snapshots" \
     --db  ~/browser-visits.db
 
 # Run for real
 python3 migrate_icloud_to_gdrive.py \
     --src ~/Documents/browser-visit-logger/snapshots \
-    --dst "~/Library/CloudStorage/GoogleDrive/My Drive/browser-visit-logger/snapshots" \
+    --dst "~/Library/CloudStorage/GoogleDrive-<account>/My Drive/browser-visit-logger/snapshots" \
     --db  ~/browser-visits.db
 ```
 
@@ -365,6 +365,8 @@ make -C ../browser-visit-sync-server build-linux GOARCH=amd64   # or arm64
 | `logs` | `journalctl` **snapshot** (`--lines`, `--since`); for a live tail use `aws ssm start-session` |
 | `health` | service active + gRPC port answers + disk under 90 % |
 | `enroll` | enrol (`--machine-id` + `--cert`), `--revoke`, or `--list` laptops in the server's `enrolled_machines.db` in place over SSM — fingerprint computed locally, no restart (the server re-reads the allowlist per request) |
+| `provision-drive` | mount the Google Drive snapshot archive on the VM via `rclone` + a service-account key (`--service-account`, `--root-folder-id` — the shared `snapshots` folder id); installs + enables the `gdrive-snapshots` systemd mount unit (idempotent). See [Google Drive service-account setup](#google-drive-service-account-setup) and [issue #47](https://github.com/theimer/browser-visit-logger/issues/47) |
+| `drive-status` | read-only diagnostic: is Drive mounted, is the mount service up, and does the canonical DB show snapshot rows |
 
 ```bash
 # First-boot setup (TLS material passed as local PEM paths)
@@ -383,7 +385,48 @@ python3 manage_sync_server.py enroll --machine-id laptop-a \
     --cert ~/.browser-visit-logger/ca/laptop-a.crt
 python3 manage_sync_server.py enroll --list
 python3 manage_sync_server.py logs --lines 50
+
+# Mount the Google Drive snapshot archive on the VM, then verify it
+# (--root-folder-id is the shared `snapshots` folder — see setup below)
+python3 manage_sync_server.py provision-drive \
+    --service-account gdrive-sa.json --root-folder-id 1AbC...xyz
+python3 manage_sync_server.py drive-status
 ```
+
+#### Google Drive service-account setup
+
+`provision-drive` authenticates the VM to Drive with a **service
+account** — a separate Google identity that can reach *only* what you
+explicitly share with it.  Sharing just the `snapshots` folder means a
+compromised VM can touch nothing else in your Drive (unlike an OAuth
+token minted from your own account, which would expose all of it).
+
+One-time steps:
+
+1. **GCP project + Drive API.**  In the [Google Cloud
+   Console](https://console.cloud.google.com/), pick or create a
+   project, then **APIs & Services → Library → Google Drive API →
+   Enable**.
+2. **Create the service account.**  **APIs & Services → Credentials →
+   Create credentials → Service account.**  Name it (e.g.
+   `bvl-vm-drive`); no roles/permissions are needed (its Drive access
+   comes from sharing, not IAM).  Note its email
+   (`bvl-vm-drive@<project>.iam.gserviceaccount.com`).
+3. **Download a JSON key.**  Open the service account → **Keys → Add key
+   → Create new key → JSON.**  Save it locally (this is the
+   `--service-account` file); treat it as a secret.
+4. **Share the `snapshots` folder.**  In Drive, open
+   `My Drive/browser-visit-logger/`, right-click the **`snapshots`**
+   subfolder → **Share**, add the service-account email as **Editor**.
+   (Editor, not Viewer — the VM verifier writes `MANIFEST.tsv`.)
+5. **Get the folder id.**  Open that `snapshots` folder in the browser;
+   the id is the last path segment of the URL
+   (`drive.google.com/drive/folders/<THIS>`).  That is
+   `--root-folder-id`.
+
+Then run `provision-drive … && drive-status`.  The key is uploaded to
+the VM SSE-encrypted through S3 and stored `0400` as `bvlsync`; the VM
+never opens an inbound port for any of this (all over SSM).
 
 `provision --and-deploy --binary <path>` chains a deploy after
 provisioning.  `deploy` refuses a binary whose arch token doesn't match

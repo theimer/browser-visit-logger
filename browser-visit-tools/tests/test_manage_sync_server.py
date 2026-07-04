@@ -190,6 +190,59 @@ def test_provision_and_deploy(monkeypatch, tmp_path):
 
 
 # --------------------------------------------------------------------------
+# provision-drive / drive-status  (issue #47)
+# --------------------------------------------------------------------------
+
+def _drive_args(service_account, root_folder_id='folder-123'):
+    return argparse.Namespace(
+        action='provision-drive', region=None,
+        service_account=str(service_account), root_folder_id=root_folder_id)
+
+
+def test_provision_drive_success(monkeypatch, tmp_path, capsys):
+    sa = tmp_path / 'gdrive-sa.json'
+    sa.write_text('{"type":"service_account"}')
+    runner, uploads = _patch(monkeypatch)
+    assert mss.cmd_provision_drive(_drive_args(sa)) == 0
+    # mount unit + service-account key uploaded; the KEY (and only it) is SSE'd.
+    keys = [u[1] for u in uploads]
+    assert 'deploy/gdrive-snapshots.service' in keys
+    assert 'gdrive/gdrive-sa.json' in keys
+    assert {u[1] for u in uploads if u[2]} == {'gdrive/gdrive-sa.json'}
+    cmds = '\n'.join(runner.last_commands())
+    # installs rclone, writes the remote config with the given folder id,
+    # locks down the secret, and brings the mount up now.
+    assert 'dnf install -y rclone' in cmds
+    assert 'folder-123' in cmds and mss._RCLONE_CONF in cmds
+    assert f'chmod 400 {mss._GDRIVE_SA}' in cmds
+    assert 'systemctl enable --now gdrive-snapshots' in cmds
+    assert 'drive-status' in capsys.readouterr().out
+
+
+def test_provision_drive_missing_key(monkeypatch, tmp_path, capsys):
+    _patch(monkeypatch)
+    assert mss.cmd_provision_drive(_drive_args(tmp_path / 'absent.json')) == 1
+    assert 'service account key not found' in capsys.readouterr().err
+    # bailed before touching AWS
+    assert _patch.waited == []
+
+
+def test_drive_status_is_read_only(monkeypatch):
+    runner, _ = _patch(monkeypatch)
+    assert mss.cmd_drive_status(_args('drive-status')) == 0
+    cmds = '\n'.join(runner.last_commands())
+    assert f'mountpoint -q {mss._GDRIVE_MOUNT}' in cmds
+    # Probed as the mount owner, not root — a root-run mountpoint on an
+    # owner-only FUSE mount gets EACCES and falsely reports "NOT mounted".
+    assert 'runuser -u bvlsync -- mountpoint' in cmds
+    assert 'is-active gdrive-snapshots.service' in cmds
+    assert 'SELECT date, sealed FROM snapshots' in cmds
+    # a diagnostic never mutates: no writes, no chown, no service control.
+    assert 'chown' not in cmds
+    assert 'systemctl enable' not in cmds and 'systemctl restart' not in cmds
+
+
+# --------------------------------------------------------------------------
 # deploy
 # --------------------------------------------------------------------------
 

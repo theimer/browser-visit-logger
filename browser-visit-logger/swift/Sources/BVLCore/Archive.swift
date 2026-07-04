@@ -52,12 +52,16 @@ public enum Archive {
         _ db: Database, source: String, basename: String,
         dateStr: String, log: HostLog?
     ) {
-        let dateSubdir = (Paths.icloudSnapshotsDir as NSString)
-            .appendingPathComponent(dateStr)
-        let dest = (dateSubdir as NSString).appendingPathComponent(basename)
-
         do {
-            // (a) Ensure the date subdir exists.
+            // (a) Resolve the archive root and ensure the date subdir
+            //     exists.  archiveSnapshotsDir() throws when the Google
+            //     Drive mount is unconfigured/absent rather than naming a
+            //     local-only path — so an un-synced destination surfaces
+            //     as a recorded `move` error and the source is preserved
+            //     (the catch below skips the unlink at step (g)).
+            let dateSubdir = (try Paths.archiveSnapshotsDir() as NSString)
+                .appendingPathComponent(dateStr)
+            let dest = (dateSubdir as NSString).appendingPathComponent(basename)
             try FileManager.default.createDirectory(
                 atPath: dateSubdir, withIntermediateDirectories: true)
             // (b) Copy source → dest.  shutil.copy2 preserves mtime; we

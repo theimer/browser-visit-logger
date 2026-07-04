@@ -185,13 +185,15 @@ let log = HostLog(path: ProcessInfo.processInfo.environment["BVL_VERIFIER_LOG"]
                        ?? Paths.hostLog)
 
 func resolveTarget(_ arg: String) -> String {
-    // Bare 'YYYY-MM-DD' joins under ICLOUD_SNAPSHOTS_DIR; anything
-    // that looks like a path (absolute, or contains a separator) is
-    // used verbatim.
+    // Bare 'YYYY-MM-DD' joins under the archive root; anything that looks
+    // like a path (absolute, or contains a separator) is used verbatim.
     if (arg as NSString).isAbsolutePath || arg.contains("/") {
         return arg
     }
-    return (Paths.icloudSnapshotsDir as NSString).appendingPathComponent(arg)
+    // If the archive root is unconfigured, fall back to the bare arg so
+    // the caller reports a clear "No such directory" rather than crashing.
+    guard let root = try? Paths.archiveSnapshotsDir() else { return arg }
+    return (root as NSString).appendingPathComponent(arg)
 }
 
 func verifyOne(target: String, opts: CLIOptions) -> Int32 {
@@ -237,9 +239,16 @@ func verifyAllSealed(
         if !quiet { print("No sealed directories to verify.") }
         return true
     }
+    let archiveRoot: String
+    do {
+        archiveRoot = try Paths.archiveSnapshotsDir()
+    } catch {
+        log.error("verify-all: archive root unavailable: \(error)")
+        return false
+    }
     var anyFailed = false
     for date in dates {
-        let target = (Paths.icloudSnapshotsDir as NSString)
+        let target = (archiveRoot as NSString)
             .appendingPathComponent(date)
         if !FileManager.default.fileExists(atPath: target) {
             // Already covered by the seal pass's missing_directory error.
@@ -287,12 +296,16 @@ func printResult(target: String, result: VerifyResult, quiet: Bool) {
 
 func runTick(opts: CLIOptions) -> Int32 {
     do {
+        // Resolve the archive root first; archiveSnapshotsDir() throws
+        // when the Google Drive mount is unconfigured/absent, so we never
+        // create a local-only tree Drive won't sync.  We create only our
+        // own subdirectory under the (pre-existing) Drive mount.
+        let archiveRoot = try Paths.archiveSnapshotsDir()
         try FileManager.default.createDirectory(
-            atPath: Paths.icloudSnapshotsDir,
-            withIntermediateDirectories: true)
+            atPath: archiveRoot, withIntermediateDirectories: true)
     } catch {
         FileHandle.standardError.write(Data(
-            "Could not create iCloud snapshots dir \(Paths.icloudSnapshotsDir): \(error)\n".utf8))
+            "Could not prepare snapshots archive: \(error)\n".utf8))
         return 1
     }
     if !FileManager.default.fileExists(atPath: Paths.dbFile) {
