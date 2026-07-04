@@ -390,6 +390,30 @@ class TestBuildManifestRows(_SealHelpersTestBase):
         self.assertEqual(rows, [(basename, 'read', '2024-01-15T10:00:00Z',
                                  'https://a.com', 'A')])
 
+    def test_match_by_filename_only_matches_row_with_empty_directory(self):
+        # VM sealing: the synced DB records filename but leaves directory ''
+        # (and the mount path differs from every laptop's path anyway).  With
+        # MATCH_BY_FILENAME_ONLY the file still matches its event row; without
+        # it, the directory mismatch would make it an orphan.
+        basename = '2024-01-15T10-00-00Z-abc.mhtml'
+        Path(self.subdir, basename).write_bytes(b'data')
+        host.insert_visit(self.conn, '2024-01-15T10:00:00Z',
+                          'https://a.com', 'A')
+        self.conn.execute(
+            "INSERT INTO read_events (url, timestamp, filename, directory) "
+            "VALUES (?, ?, ?, '')",
+            ('https://a.com', '2024-01-15T10:00:00Z', basename))
+        self.conn.commit()
+
+        # Default (directory-scoped): no match → orphan, excluded.
+        self.assertEqual(
+            snapshot_mover._build_manifest_rows(self.conn, self.subdir), [])
+
+        with patch.object(snapshot_mover, 'MATCH_BY_FILENAME_ONLY', True):
+            rows = snapshot_mover._build_manifest_rows(self.conn, self.subdir)
+        self.assertEqual(rows, [(basename, 'read', '2024-01-15T10:00:00Z',
+                                 'https://a.com', 'A')])
+
     def test_excludes_non_conforming_filename_and_records_invalid_filename(self):
         Path(self.subdir, 'random.mhtml').write_bytes(b'x')
         rows = snapshot_mover._build_manifest_rows(self.conn, self.subdir)
