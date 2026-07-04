@@ -7,6 +7,7 @@ match path is what makes sealing work.
 import datetime
 import os
 import sqlite3
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,7 +15,13 @@ from unittest.mock import patch
 
 import host
 import snapshot_mover
-import seal_completed_days as scd
+
+# seal_completed_days.py is VM code and lives with the sync-server, not in
+# native-host; add its directory so the import resolves (conftest already
+# puts native-host on the path for host/snapshot_mover).
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]
+                       / 'browser-visit-sync-server' / 'sealer'))
+import seal_completed_days as scd  # noqa: E402
 
 
 class SealCompletedDaysTest(unittest.TestCase):

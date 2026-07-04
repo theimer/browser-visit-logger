@@ -61,9 +61,16 @@ _VERIFIER_UNIT_FILE = _DEPLOY / 'gdrive-verifier.service'
 _VERIFIER_TIMER_FILE = _DEPLOY / 'gdrive-verifier.timer'
 
 # Stdlib-only sealer scripts pushed to the VM (imported chain:
-# seal_completed_days → snapshot_mover).  Deployed under _BVL_LIB.
+# seal_completed_days → snapshot_mover), deployed side-by-side under _BVL_LIB.
+# The VM entrypoint is VM code (browser-visit-sync-server/sealer/); the shared
+# sealing library still lives with the laptop tools that also use it in
+# native-host/ (extracting it is a separate follow-up).
+_SEALER_DIR = _DEPLOY.parent / 'sealer'
 _NATIVE_HOST = _HERE.parent / 'browser-visit-logger' / 'native-host'
-_SEALER_SCRIPTS = ('snapshot_mover.py', 'seal_completed_days.py')
+_SEALER_SCRIPTS = {
+    'snapshot_mover.py': _NATIVE_HOST / 'snapshot_mover.py',
+    'seal_completed_days.py': _SEALER_DIR / 'seal_completed_days.py',
+}
 _BVL_LIB = '/usr/local/lib/bvl'
 
 # state ``arch`` → Go GOARCH token expected in the built binary's name.
@@ -309,8 +316,8 @@ def cmd_provision_sealer(args):
     (provision-drive) to already be in place."""
     region, ssm, instance_id = _ssm_target(args)
     s3, bucket = _stage_clients(region)
-    for name in _SEALER_SCRIPTS:
-        aws.upload_file(s3, _NATIVE_HOST / name, bucket, f'sealer/{name}')
+    for name, src in _SEALER_SCRIPTS.items():
+        aws.upload_file(s3, src, bucket, f'sealer/{name}')
     aws.upload_file(s3, _VERIFIER_UNIT_FILE, bucket,
                     'deploy/gdrive-verifier.service')
     aws.upload_file(s3, _VERIFIER_TIMER_FILE, bucket,
