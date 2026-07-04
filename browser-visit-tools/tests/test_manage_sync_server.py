@@ -227,6 +227,39 @@ def test_provision_drive_missing_key(monkeypatch, tmp_path, capsys):
     assert _patch.waited == []
 
 
+def test_provision_sealer_deploys_scripts_and_timer(monkeypatch, capsys):
+    runner, uploads = _patch(monkeypatch)
+    assert mss.cmd_provision_sealer(_args('provision-sealer')) == 0
+    keys = [u[1] for u in uploads]
+    # both stdlib scripts + the oneshot unit + the timer are staged
+    assert 'sealer/snapshot_mover.py' in keys
+    assert 'sealer/seal_completed_days.py' in keys
+    assert 'deploy/gdrive-verifier.service' in keys
+    assert 'deploy/gdrive-verifier.timer' in keys
+    cmds = '\n'.join(runner.last_commands())
+    assert f'mkdir -p {mss._BVL_LIB}' in cmds
+    assert 'systemctl enable --now gdrive-verifier.timer' in cmds
+    assert 'sealer provisioned' in capsys.readouterr().out
+
+
+def test_sealer_run_runs_as_bvlsync_with_env(monkeypatch):
+    runner, _ = _patch(monkeypatch)
+    assert mss.cmd_sealer_run(_args('sealer-run', dry_run=False)) == 0
+    cmds = '\n'.join(runner.last_commands())
+    # runs as the mount owner, with the same env the systemd unit sets
+    assert 'runuser -u bvlsync -- env' in cmds
+    assert f'BVL_ICLOUD_SNAPSHOTS_DIR={mss._GDRIVE_MOUNT}' in cmds
+    assert 'BVL_MATCH_BY_FILENAME=1' in cmds
+    assert f'python3 {mss._BVL_LIB}/seal_completed_days.py' in cmds
+    assert '--dry-run' not in cmds
+
+
+def test_sealer_run_dry_run(monkeypatch):
+    runner, _ = _patch(monkeypatch)
+    assert mss.cmd_sealer_run(_args('sealer-run', dry_run=True)) == 0
+    assert '--dry-run' in '\n'.join(runner.last_commands())
+
+
 def test_drive_status_is_read_only(monkeypatch):
     runner, _ = _patch(monkeypatch)
     assert mss.cmd_drive_status(_args('drive-status')) == 0

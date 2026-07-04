@@ -1,0 +1,13 @@
+[Unit]
+Description=Periodic seal of completed snapshot days
+Documentation=https://github.com/theimer/browser-visit-logger/issues/47
+
+[Timer]
+# First run shortly after boot, then hourly.  Persistent catches up a
+# missed run (VM stopped/asleep) on the next boot.
+OnBootSec=5min
+OnUnitActiveSec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -405,9 +405,11 @@ class TestBuildManifestRows(_SealHelpersTestBase):
             ('https://a.com', '2024-01-15T10:00:00Z', basename))
         self.conn.commit()
 
-        # Default (directory-scoped): no match → orphan, excluded.
-        self.assertEqual(
-            snapshot_mover._build_manifest_rows(self.conn, self.subdir), [])
+        # Default (directory-scoped): no match → orphan, excluded.  Patch
+        # explicitly so the assertion doesn't depend on ambient global state.
+        with patch.object(snapshot_mover, 'MATCH_BY_FILENAME_ONLY', False):
+            self.assertEqual(
+                snapshot_mover._build_manifest_rows(self.conn, self.subdir), [])
 
         with patch.object(snapshot_mover, 'MATCH_BY_FILENAME_ONLY', True):
             rows = snapshot_mover._build_manifest_rows(self.conn, self.subdir)

@@ -1,0 +1,19 @@
+[Unit]
+Description=Seal completed days in the Google Drive snapshot archive
+Documentation=https://github.com/theimer/browser-visit-logger/issues/47
+# Needs the Drive mount present: Requires pulls it in, After orders us
+# behind it so we never seal against an empty/absent mountpoint.
+Requires=gdrive-snapshots.service
+After=gdrive-snapshots.service
+
+[Service]
+Type=oneshot
+# Runs as the mount owner so it can read the owner-only FUSE mount and
+# write MANIFEST.tsv back into the shared Drive folder; also the owner of
+# the canonical DB it seals rows in.
+User=bvlsync
+Group=bvlsync
+Environment=BVL_ICLOUD_SNAPSHOTS_DIR=/mnt/gdrive-snapshots
+Environment=BVL_DB_FILE=/var/lib/browser-visit-sync/browser-visits.db
+Environment=BVL_MATCH_BY_FILENAME=1
+ExecStart=/usr/bin/python3 /usr/local/lib/bvl/seal_completed_days.py
