@@ -18,6 +18,13 @@ Subcommands
     drive-status
                Report whether Drive is mounted, the mount service is up,
                and the canonical DB holds snapshot rows.  Read-only.
+    provision-sealer
+               Deploy the stdlib seal pass + the gdrive-verifier oneshot
+               and hourly timer to the VM; enable the timer.  Idempotent.
+               Needs provision-drive done first.  (See issue #47.)
+    sealer-run
+               Run the seal pass once on demand as bvlsync; --dry-run
+               reports what would be sealed without writing.
     start      systemctl start sync-server
     stop       systemctl stop sync-server
     restart    systemctl restart sync-server
@@ -50,6 +57,21 @@ _HERE = Path(__file__).resolve().parent
 _DEPLOY = _HERE.parent / 'browser-visit-sync-server' / 'deploy'
 _UNIT_FILE = _DEPLOY / 'sync-server.service'
 _MOUNT_UNIT_FILE = _DEPLOY / 'gdrive-snapshots.service'
+_VERIFIER_UNIT_FILE = _DEPLOY / 'gdrive-verifier.service'
+_VERIFIER_TIMER_FILE = _DEPLOY / 'gdrive-verifier.timer'
+
+# Stdlib-only sealer scripts pushed to the VM (imported chain:
+# seal_completed_days → snapshot_mover), deployed side-by-side under _BVL_LIB.
+# The VM entrypoint is VM code (browser-visit-sync-server/sealer/); the shared
+# sealing library still lives with the laptop tools that also use it in
+# native-host/ (extracting it is a separate follow-up).
+_SEALER_DIR = _DEPLOY.parent / 'sealer'
+_NATIVE_HOST = _HERE.parent / 'browser-visit-logger' / 'native-host'
+_SEALER_SCRIPTS = {
+    'snapshot_mover.py': _NATIVE_HOST / 'snapshot_mover.py',
+    'seal_completed_days.py': _SEALER_DIR / 'seal_completed_days.py',
+}
+_BVL_LIB = '/usr/local/lib/bvl'
 
 # state ``arch`` → Go GOARCH token expected in the built binary's name.
 _GOARCH = {'x86_64': 'amd64', 'arm64': 'arm64'}
@@ -69,16 +91,26 @@ _RCLONE_CONF = f'{_ETC_DIR}/rclone.conf'
 # Read-only DB probe for `drive-status`.  Uses the sqlite3 module (guaranteed on
 # AL2023) rather than the sqlite3 CLI (not installed), mirroring _ENROLL_PY.
 # argv: <db>.  Opened read-only so a concurrent write never blocks the probe.
-_SNAPSHOT_SUMMARY_PY = '''\
+# Reports the event rows the sealer consumes (read/skimmed) plus the current
+# snapshots-table sealed state — so a glance answers "is there data to seal,
+# and has it been sealed yet?".
+_DB_SUMMARY_PY = '''\
 import sqlite3, sys
 try:
     c = sqlite3.connect("file:%s?mode=ro" % sys.argv[1], uri=True)
+    def count(t):
+        try:
+            return str(c.execute("SELECT COUNT(*) FROM %s" % t).fetchone()[0])
+        except Exception:
+            return "n/a"
+    print("  event rows to seal: read=%s skimmed=%s"
+          % (count("read_events"), count("skimmed_events")))
     rows = c.execute("SELECT date, sealed FROM snapshots "
                      "ORDER BY date DESC LIMIT 5").fetchall()
     if not rows:
-        print("  (snapshots table empty)")
+        print("  snapshots table: (empty)")
     for d, s in rows:
-        print("  %s  sealed=%s" % (d, s))
+        print("  snapshots: %s sealed=%s" % (d, s))
 except Exception as e:
     print("  (query failed: %s)" % e)
 '''
@@ -271,11 +303,60 @@ def cmd_drive_status(args):
         'echo "recent snapshot days on Drive:"; '
         f'days=$(runuser -u bvlsync -- ls -1 {_GDRIVE_MOUNT} 2>/dev/null '
         '| tail -5); echo "${days:-  (none yet)}"',
-        'echo "snapshot rows in canonical DB:"; '
-        f'python3 -c {shlex.quote(_SNAPSHOT_SUMMARY_PY)} {_SNAPSHOTS_DB}',
+        'echo "canonical DB (sealer input + state):"; '
+        f'python3 -c {shlex.quote(_DB_SUMMARY_PY)} {_SNAPSHOTS_DB}',
     ]
     return _surface(aws.run_remote(ssm, instance_id, script,
                                    comment='bvl drive-status'))
+
+
+def cmd_provision_sealer(args):
+    """Deploy the stdlib sealer scripts + the gdrive-verifier oneshot/timer
+    to the VM and enable the timer.  Idempotent.  Requires the Drive mount
+    (provision-drive) to already be in place."""
+    region, ssm, instance_id = _ssm_target(args)
+    s3, bucket = _stage_clients(region)
+    for name, src in _SEALER_SCRIPTS.items():
+        aws.upload_file(s3, src, bucket, f'sealer/{name}')
+    aws.upload_file(s3, _VERIFIER_UNIT_FILE, bucket,
+                    'deploy/gdrive-verifier.service')
+    aws.upload_file(s3, _VERIFIER_TIMER_FILE, bucket,
+                    'deploy/gdrive-verifier.timer')
+    script = [
+        'set -euo pipefail',
+        f'mkdir -p {_BVL_LIB}',
+        *[f'aws s3 cp s3://{bucket}/sealer/{name} {_BVL_LIB}/{name}'
+          for name in _SEALER_SCRIPTS],
+        f'chmod 0755 {_BVL_LIB}/seal_completed_days.py',
+        f'aws s3 cp s3://{bucket}/deploy/gdrive-verifier.service '
+        '/etc/systemd/system/gdrive-verifier.service',
+        f'aws s3 cp s3://{bucket}/deploy/gdrive-verifier.timer '
+        '/etc/systemd/system/gdrive-verifier.timer',
+        'systemctl daemon-reload',
+        'systemctl enable --now gdrive-verifier.timer',
+    ]
+    rc = _surface(aws.run_remote(ssm, instance_id, script,
+                                 comment='bvl provision-sealer'))
+    if rc == 0:
+        print("sealer provisioned; gdrive-verifier.timer enabled. Preview "
+              "with `sealer-run --dry-run`, then `drive-status`.")
+    return rc
+
+
+def cmd_sealer_run(args):
+    """Run the seal pass once, on demand, as bvlsync (the mount owner).
+    With --dry-run, reports what would be sealed without writing."""
+    _region, ssm, instance_id = _ssm_target(args)
+    flag = ' --dry-run' if args.dry_run else ''
+    # Run as the mount owner so the owner-only FUSE mount is readable; pass
+    # the same env the systemd unit sets.
+    cmd = (f'runuser -u bvlsync -- env '
+           f'BVL_ICLOUD_SNAPSHOTS_DIR={_GDRIVE_MOUNT} '
+           f'BVL_DB_FILE={_SNAPSHOTS_DB} BVL_MATCH_BY_FILENAME=1 '
+           f'python3 {_BVL_LIB}/seal_completed_days.py{flag}')
+    return _surface(aws.run_remote(ssm, instance_id,
+                                   ['set -euo pipefail', cmd],
+                                   comment='bvl sealer-run'))
 
 
 def _check_arch(binary):
@@ -418,6 +499,7 @@ _DISPATCH = {
     'stop': cmd_stop, 'restart': cmd_restart, 'status': cmd_status,
     'logs': cmd_logs, 'health': cmd_health, 'enroll': cmd_enroll,
     'provision-drive': cmd_provision_drive, 'drive-status': cmd_drive_status,
+    'provision-sealer': cmd_provision_sealer, 'sealer-run': cmd_sealer_run,
 }
 
 
@@ -465,6 +547,15 @@ def _build_parser():
     with_region(sub.add_parser(
         'drive-status',
         help='report whether Drive is mounted and holds snapshot data'))
+
+    with_region(sub.add_parser(
+        'provision-sealer',
+        help='deploy the seal pass + gdrive-verifier timer to the VM'))
+
+    psr = with_region(sub.add_parser(
+        'sealer-run', help='run the seal pass once, on demand'))
+    psr.add_argument('--dry-run', action='store_true',
+                     help='report what would be sealed without writing')
 
     pl = with_region(sub.add_parser('logs', help='journalctl snapshot'))
     pl.add_argument('--lines', type=int, default=100,

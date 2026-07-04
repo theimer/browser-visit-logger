@@ -60,6 +60,11 @@ def _parse_args(argv=None) -> argparse.Namespace:
     p.add_argument('--db', metavar='FILE',
                    help=f'override the SQLite database path '
                         f'(default {snapshot_mover.DB_FILE})')
+    p.add_argument('--match-by-filename', action='store_true',
+                   help='match snapshot files to event rows by filename '
+                        'alone, ignoring the directory column (for VM sealing, '
+                        'where the synced DB has no directory and the mount '
+                        'path differs from every laptop; filenames are unique)')
     return p.parse_args(argv)
 
 
@@ -110,6 +115,8 @@ def cli(argv=None) -> int:
         snapshot_mover.ICLOUD_SNAPSHOTS_DIR = args.dest
     if args.db is not None:
         snapshot_mover.DB_FILE = args.db
+    if args.match_by_filename:
+        snapshot_mover.MATCH_BY_FILENAME_ONLY = True
 
     target = _resolve_target(args.directory)
 

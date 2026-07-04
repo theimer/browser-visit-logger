@@ -55,6 +55,17 @@ ICLOUD_SNAPSHOTS_DIR = os.environ.get(
 # day's log into the matching iCloud snapshot subdir.
 LOG_DIR = os.environ.get('BVL_LOG_DIR', HOME)
 
+# Match snapshot files to their event rows by `filename` alone, ignoring the
+# `directory` column.  Off on laptops, where the same filename can transiently
+# exist in both Downloads and the archive, so directory disambiguates.  ON when
+# sealing on the VM: the canonical DB is populated by sync, which records
+# `filename` but never `directory` (it stays ''), and the mount path
+# (/mnt/gdrive-snapshots/<date>) differs from every laptop's local Drive path
+# anyway.  Snapshot filenames are globally unique (<UTC-timestamp>-<hash>.<ext>),
+# so filename alone is an unambiguous key.  Set via the sealer's
+# --match-by-filename flag / BVL_MATCH_BY_FILENAME.
+MATCH_BY_FILENAME_ONLY = os.environ.get('BVL_MATCH_BY_FILENAME') == '1'
+
 # OSError errno values that warrant an immediate notification regardless of
 # operation.  These are signs the underlying disk / filesystem is in a state
 # the surviving code can't recover from on its own.  Used by `_is_immediate`,
@@ -519,11 +530,18 @@ def _lookup_event(
     Table names are trusted internal constants; safe to interpolate into SQL.
     """
     for table, tag in (('read_events', 'read'), ('skimmed_events', 'skimmed')):
+        if MATCH_BY_FILENAME_ONLY:
+            # VM sealing: `directory` is unpopulated/heterogeneous in the
+            # synced DB; the globally-unique filename is the sole key.
+            where, params = "e.filename = ?", (filename,)
+        else:
+            where, params = "e.filename = ? AND e.directory = ?", (filename,
+                                                                    directory)
         row = conn.execute(
             f"SELECT e.url, e.timestamp, COALESCE(v.title, '')"
             f"  FROM {table} e LEFT JOIN visits v ON v.url = e.url"
-            f" WHERE e.filename = ? AND e.directory = ?",
-            (filename, directory),
+            f" WHERE {where}",
+            params,
         ).fetchone()
         if row is not None:
             return {'tag': tag, 'url': row[0],

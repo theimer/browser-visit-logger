@@ -366,7 +366,9 @@ make -C ../browser-visit-sync-server build-linux GOARCH=amd64   # or arm64
 | `health` | service active + gRPC port answers + disk under 90 % |
 | `enroll` | enrol (`--machine-id` + `--cert`), `--revoke`, or `--list` laptops in the server's `enrolled_machines.db` in place over SSM — fingerprint computed locally, no restart (the server re-reads the allowlist per request) |
 | `provision-drive` | mount the Google Drive snapshot archive on the VM via `rclone` + a service-account key (`--service-account`, `--root-folder-id` — the shared `snapshots` folder id); installs + enables the `gdrive-snapshots` systemd mount unit (idempotent). See [Google Drive service-account setup](#google-drive-service-account-setup) and [issue #47](https://github.com/theimer/browser-visit-logger/issues/47) |
-| `drive-status` | read-only diagnostic: is Drive mounted, is the mount service up, and does the canonical DB show snapshot rows |
+| `drive-status` | read-only diagnostic: is Drive mounted, is the mount service up, event-row counts the sealer will consume, and the snapshots sealed state |
+| `provision-sealer` | deploy the stdlib seal pass (`seal_completed_days.py` + `snapshot_mover.py`) and the `gdrive-verifier` oneshot + hourly timer to the VM; enable the timer (idempotent). Needs `provision-drive` first. See [issue #47](https://github.com/theimer/browser-visit-logger/issues/47) |
+| `sealer-run` | run the seal pass once on demand as `bvlsync`; `--dry-run` lists what would be sealed without writing |
 
 ```bash
 # First-boot setup (TLS material passed as local PEM paths)
@@ -391,6 +393,12 @@ python3 manage_sync_server.py logs --lines 50
 python3 manage_sync_server.py provision-drive \
     --service-account gdrive-sa.json --root-folder-id 1AbC...xyz
 python3 manage_sync_server.py drive-status
+
+# Deploy the VM-side seal pass + hourly timer, preview, then run it
+python3 manage_sync_server.py provision-sealer
+python3 manage_sync_server.py sealer-run --dry-run   # preview
+python3 manage_sync_server.py sealer-run             # seal now
+python3 manage_sync_server.py drive-status           # confirm sealed rows
 ```
 
 #### Google Drive service-account setup
