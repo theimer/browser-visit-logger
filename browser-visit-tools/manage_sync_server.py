@@ -61,14 +61,14 @@ _VERIFIER_UNIT_FILE = _DEPLOY / 'gdrive-verifier.service'
 _VERIFIER_TIMER_FILE = _DEPLOY / 'gdrive-verifier.timer'
 
 # Stdlib-only sealer scripts pushed to the VM (imported chain:
-# seal_completed_days → snapshot_mover), deployed side-by-side under _BVL_LIB.
-# The VM entrypoint is VM code (browser-visit-sync-server/sealer/); the shared
-# sealing library still lives with the laptop tools that also use it in
-# native-host/ (extracting it is a separate follow-up).
+# seal_completed_days → snapshot_mover), deployed side-by-side under _BVL_LIB
+# so the same-directory import resolves on the VM.  The VM entrypoint is VM
+# code (browser-visit-sync-server/sealer/); the shared sealing library is its
+# own top-level component (browser-visit-snapshot-lib/).
 _SEALER_DIR = _DEPLOY.parent / 'sealer'
-_NATIVE_HOST = _HERE.parent / 'browser-visit-logger' / 'native-host'
+_SNAPSHOT_LIB = _HERE.parent / 'browser-visit-snapshot-lib'
 _SEALER_SCRIPTS = {
-    'snapshot_mover.py': _NATIVE_HOST / 'snapshot_mover.py',
+    'snapshot_mover.py': _SNAPSHOT_LIB / 'snapshot_mover.py',
     'seal_completed_days.py': _SEALER_DIR / 'seal_completed_days.py',
 }
 _BVL_LIB = '/usr/local/lib/bvl'

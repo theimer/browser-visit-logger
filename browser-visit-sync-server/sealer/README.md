@@ -18,7 +18,8 @@ Deployed and scheduled by
 oneshot + hourly timer (units in [`../deploy/`](../deploy/)).
 
 It depends on the shared, stdlib-only sealing library `snapshot_mover.py`
-(currently in `browser-visit-logger/native-host/`, still shared with the
-laptop-side manual tools; `provision-sealer` ships both files
-side-by-side into `/usr/local/lib/bvl/` on the VM). Tests live in
+in [`browser-visit-snapshot-lib/`](../../browser-visit-snapshot-lib/)
+(also used by the laptop-side manual tools); `provision-sealer` ships
+both files side-by-side into `/usr/local/lib/bvl/` on the VM, so the
+same-directory import resolves there. Tests live in
 [`browser-visit-logger/tests/test_seal_completed_days.py`](../../browser-visit-logger/tests/test_seal_completed_days.py).
