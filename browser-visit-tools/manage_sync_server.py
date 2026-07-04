@@ -69,16 +69,26 @@ _RCLONE_CONF = f'{_ETC_DIR}/rclone.conf'
 # Read-only DB probe for `drive-status`.  Uses the sqlite3 module (guaranteed on
 # AL2023) rather than the sqlite3 CLI (not installed), mirroring _ENROLL_PY.
 # argv: <db>.  Opened read-only so a concurrent write never blocks the probe.
-_SNAPSHOT_SUMMARY_PY = '''\
+# Reports the event rows the sealer consumes (read/skimmed) plus the current
+# snapshots-table sealed state — so a glance answers "is there data to seal,
+# and has it been sealed yet?".
+_DB_SUMMARY_PY = '''\
 import sqlite3, sys
 try:
     c = sqlite3.connect("file:%s?mode=ro" % sys.argv[1], uri=True)
+    def count(t):
+        try:
+            return str(c.execute("SELECT COUNT(*) FROM %s" % t).fetchone()[0])
+        except Exception:
+            return "n/a"
+    print("  event rows to seal: read=%s skimmed=%s"
+          % (count("read_events"), count("skimmed_events")))
     rows = c.execute("SELECT date, sealed FROM snapshots "
                      "ORDER BY date DESC LIMIT 5").fetchall()
     if not rows:
-        print("  (snapshots table empty)")
+        print("  snapshots table: (empty)")
     for d, s in rows:
-        print("  %s  sealed=%s" % (d, s))
+        print("  snapshots: %s sealed=%s" % (d, s))
 except Exception as e:
     print("  (query failed: %s)" % e)
 '''
@@ -271,8 +281,8 @@ def cmd_drive_status(args):
         'echo "recent snapshot days on Drive:"; '
         f'days=$(runuser -u bvlsync -- ls -1 {_GDRIVE_MOUNT} 2>/dev/null '
         '| tail -5); echo "${days:-  (none yet)}"',
-        'echo "snapshot rows in canonical DB:"; '
-        f'python3 -c {shlex.quote(_SNAPSHOT_SUMMARY_PY)} {_SNAPSHOTS_DB}',
+        'echo "canonical DB (sealer input + state):"; '
+        f'python3 -c {shlex.quote(_DB_SUMMARY_PY)} {_SNAPSHOTS_DB}',
     ]
     return _surface(aws.run_remote(ssm, instance_id, script,
                                    comment='bvl drive-status'))
