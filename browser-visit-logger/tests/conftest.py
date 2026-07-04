@@ -49,3 +49,8 @@ os.environ.setdefault('BVL_PEER_LOGS_DIR', _sub('peers'))
 
 # Make `import host` work from any test file.
 sys.path.insert(0, str(Path(__file__).parent.parent / 'native-host'))
+# The shared sealing library (snapshot_mover) was extracted from native-host
+# into its own top-level component; add it so the native-host tools and the
+# VM sealer resolve `import snapshot_mover` in tests.
+sys.path.insert(0, str(
+    Path(__file__).resolve().parents[2] / 'browser-visit-snapshot-lib'))

@@ -36,7 +36,12 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import host
-import snapshot_mover
+# snapshot_mover is the shared sealing library, now in its own top-level
+# component; add it to the path (host stays co-located in native-host).
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    '..', '..', 'browser-visit-snapshot-lib'))
+import snapshot_mover  # noqa: E402
 
 logger = logging.getLogger('visits_rebuilder')
 

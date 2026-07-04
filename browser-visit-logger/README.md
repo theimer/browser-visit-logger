@@ -333,14 +333,17 @@ The compiled Mach-O lives at `swift/.build/release/BVLHost` after
 `BrowserVisitLoggerHost.app/Contents/MacOS/BrowserVisitLoggerHost`
 during install.
 
-### `native-host/snapshot_mover.py`
+### `snapshot_mover.py` (in `../browser-visit-snapshot-lib/`)
 
-**Library only**, retained as a Python helper for `snapshot_sealer.py`
-and `visits_rebuilder.py`.  The production move / seal / verify
-pipeline runs in Swift now (see `BVLHost` above and `BVLVerifier`
-below); this file's `_seal_directory`, `_ensure_snapshots_table`,
-manifest constants, and other utilities are still imported by the
-two surviving Python CLI tools and their tests.
+**Shared library only.**  The production move / seal / verify pipeline
+runs in Swift now (see `BVLHost` above and `BVLVerifier` below); this
+file's `_seal_directory`, `_ensure_snapshots_table`, manifest constants,
+and other utilities are imported by the surviving Python CLI tools
+(`snapshot_sealer.py`, `visits_rebuilder.py`) *and* the VM-side sealer
+([`browser-visit-sync-server/sealer/`](../browser-visit-sync-server/sealer/)).
+Because it is shared across the laptop and VM sides it lives in its own
+top-level component, [`browser-visit-snapshot-lib/`](../browser-visit-snapshot-lib/),
+rather than in this laptop directory.
 
 ### `native-host/snapshot_sealer.py`
 
@@ -878,7 +881,6 @@ browser-visit-logger/
 │   └── .build/release/                     # built binaries (after `swift build -c release`)
 ├── native-host/
 │   ├── host.py                             # DB helpers used by the rebuilder
-│   ├── snapshot_mover.py                   # Seal / orphan-merge helpers used by sealer
 │   ├── snapshot_sealer.py                  # Manual sealer CLI (Python)
 │   ├── visits_rebuilder.py                 # DB rebuilder (log replay + FS rehydrate)
 │   ├── sync_client.py                      # Multi-laptop sync subprocess (gRPC push/pull)

@@ -39,7 +39,14 @@ import os
 import sqlite3
 import sys
 
-import snapshot_mover
+# snapshot_mover is the shared sealing library.  On the VM it is deployed
+# side-by-side with this file (both under /usr/local/lib/bvl), so the
+# same-directory import resolves there; in the source tree it lives in its
+# own top-level component, added here so tests and local runs resolve it.
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    '..', '..', 'browser-visit-snapshot-lib'))
+import snapshot_mover  # noqa: E402
 
 
 def _parse_args(argv=None):
