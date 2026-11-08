@@ -1,9 +1,9 @@
 """
-Unit tests for the Python helpers in native-host/snapshot_mover.py.
+Unit tests for the Python helpers in browser-visit-snapshot-lib/snapshot_mover.py.
 
-After the Swift port these helpers are imported only by
-snapshot_sealer.py and visits_rebuilder.py.  This module covers them
-in three layers:
+After the Swift port these helpers are imported by the laptop tools
+snapshot_sealer.py and visits_rebuilder.py, and by the VM seal pass
+seal_completed_days.py.  This module covers them in three layers:
 
   1. Bare schema / utility tests (TestTodayUtc, TestSnapshotsTable
      Schema, TestMoverErrorsSchema) for in-memory smoke coverage.
@@ -22,6 +22,7 @@ import datetime
 import errno
 import os
 import sqlite3
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -54,6 +55,36 @@ class TestTodayUtc(unittest.TestCase):
 
     def test_returns_a_date_object(self):
         self.assertIsInstance(snapshot_mover._today_utc(), datetime.date)
+
+
+# ---------------------------------------------------------------------------
+# The ensure-table helpers must not depend on host.py (the VM has no host);
+# reproduces the deploy bug where they lazily `import host`.
+# ---------------------------------------------------------------------------
+class TestEnsureTablesHostIndependent(unittest.TestCase):
+
+    def test_ensure_tables_without_host_importable(self):
+        import builtins
+        real_import = builtins.__import__
+
+        def blocked(name, *a, **k):
+            if name == 'host':
+                raise ModuleNotFoundError("host blocked (simulating the VM)")
+            return real_import(name, *a, **k)
+
+        saved = sys.modules.pop('host', None)
+        builtins.__import__ = blocked
+        try:
+            conn = sqlite3.connect(':memory:')
+            snapshot_mover._ensure_snapshots_table(conn)
+            snapshot_mover._ensure_mover_errors_table(conn)
+            tables = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            self.assertLessEqual({'snapshots', 'mover_errors'}, tables)
+        finally:
+            builtins.__import__ = real_import
+            if saved is not None:
+                sys.modules['host'] = saved
 
 
 # ---------------------------------------------------------------------------

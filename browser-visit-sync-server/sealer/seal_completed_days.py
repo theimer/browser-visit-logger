@@ -121,16 +121,29 @@ def cli(argv=None):
         return 0
 
     conn = sqlite3.connect(snapshot_mover.DB_FILE)
+    sealed = 0
     try:
         snapshot_mover._ensure_snapshots_table(conn)
         snapshot_mover._ensure_mover_errors_table(conn)
         for name, subdir in candidates:
             snapshot_mover._seal_directory(conn, subdir, date_key=name)
+            # _seal_directory swallows errors into mover_errors; the
+            # snapshots row flips to sealed=1 only on success, so count that
+            # rather than the number attempted.
+            row = conn.execute(
+                "SELECT sealed FROM snapshots WHERE date = ?", (name,)
+            ).fetchone()
+            if row and row[0] == 1:
+                sealed += 1
     finally:
         conn.close()
-    print(f'sealed {len(candidates)} director'
-          f'{"y" if len(candidates) == 1 else "ies"}')
-    return 0
+    failed = len(candidates) - sealed
+    msg = f'sealed {sealed} of {len(candidates)} director' \
+          f'{"y" if len(candidates) == 1 else "ies"}'
+    if failed:
+        msg += f' ({failed} failed — see mover_errors)'
+    print(msg)
+    return 1 if failed else 0
 
 
 if __name__ == '__main__':  # pragma: no cover
