@@ -64,6 +64,7 @@ one-line wrapper note before delegating.
 | `migrate_icloud_to_gdrive.py` | (Python, no wrapper) | One-time iCloud → Google Drive snapshot migration |
 | `install_laptop.sh` | (Bash) | Laptop install for multi-laptop mode |
 | `uninstall_laptop_legacy.sh` | (Bash) | Remove legacy verifier LaunchAgent |
+| `check_install.sh` | (Bash) | Report which install pieces are present on this laptop |
 | `manage_vm.py` | (Python, no wrapper) | Create / start / stop / status / terminate the EC2 VM |
 | `manage_sync_server.py` | (Python, no wrapper) | Provision / deploy / control / health-check the sync-server over SSM |
 | `_bvl_aws.py` | (internal) | Shared boto3 / SSM / S3 helpers — not a CLI entrypoint |
@@ -290,6 +291,28 @@ bash uninstall_laptop_legacy.sh
 
 `install_laptop.sh` runs this script as its first step, so most
 users never invoke it directly.
+
+### `check_install.sh`
+
+Read-only check of a laptop install.  Lists every piece that
+`browser-visit-logger/install.sh` and `install_laptop.sh` set up (signing
+key, extension manifest, signed app bundles, native-messaging manifest,
+verifier LaunchAgent, extension loaded in Chrome, machine config, sync
+venv, gRPC stubs, TLS material, Google Drive mount), plus the optional
+MCP / tools venvs, and marks each one `OK`, `MISSING`, `WARN` (present
+but stale or a leftover), `N/A` (not used in this mode) or `INFO`
+(optional).  The mode is multi-laptop if
+`~/.browser-visit-logger/config.json` exists, single-laptop otherwise.
+
+```bash
+bash check_install.sh                 # auto-detect mode
+bash check_install.sh --mode multi    # check against multi-laptop mode
+```
+
+If no project component is found at all, the last line is
+`Nothing is installed.`  Exits 0 when nothing is `MISSING` or `WARN`,
+1 otherwise.  The VM side
+isn't checked; use `manage_sync_server.py health` for that.
 
 ### `manage_vm.py`
 
