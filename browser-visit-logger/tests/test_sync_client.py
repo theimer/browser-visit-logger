@@ -283,6 +283,26 @@ def test_load_stubs_success(env, monkeypatch):
     assert grpc is fake_grpc
 
 
+def test_load_stubs_adds_existing_stub_dir_to_sys_path(env, monkeypatch, tmp_path):
+    # Pretend sync_client lives in a dir with a bundled syncpb_py/ next to it,
+    # so the result doesn't depend on whether `make proto-py` was run here.
+    host_dir = tmp_path / 'native-host'
+    stub_dir = host_dir / 'syncpb_py'
+    stub_dir.mkdir(parents=True)
+    monkeypatch.setattr(sc, '__file__', str(host_dir / 'sync_client.py'))
+    monkeypatch.setattr(sys, 'path', list(sys.path))
+    monkeypatch.setitem(sys.modules, 'sync_pb2', FakeSyncPb2())
+    monkeypatch.setitem(sys.modules, 'sync_pb2_grpc', types.ModuleType('sync_pb2_grpc'))
+    monkeypatch.setitem(sys.modules, 'grpc', types.ModuleType('grpc'))
+
+    sc._load_stubs()
+    assert sys.path[0] == str(stub_dir)
+
+    # A second call must not add it again.
+    sc._load_stubs()
+    assert sys.path.count(str(stub_dir)) == 1
+
+
 def _fake_grpc(monkeypatch):
     fake = types.ModuleType('grpc')
     fake.insecure_channel = lambda ep: ('insecure', ep)
