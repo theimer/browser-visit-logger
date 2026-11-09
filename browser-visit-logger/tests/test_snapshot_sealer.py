@@ -53,7 +53,8 @@ class _SealerTestBase(unittest.TestCase):
         # Pin it to an isolated empty dir so seals stay hermetic.
         self._saved = {
             name: getattr(snapshot_mover, name)
-            for name in ('ICLOUD_SNAPSHOTS_DIR', 'DB_FILE', 'LOG_DIR')
+            for name in ('ICLOUD_SNAPSHOTS_DIR', 'DB_FILE', 'LOG_DIR',
+                         'MATCH_BY_FILENAME_ONLY')
         }
         snapshot_mover.LOG_DIR = self.log_dir
         self._saved_log_level = snapshot_mover.logger.level
@@ -148,6 +149,24 @@ class TestSealerHappyPath(_SealerTestBase):
             '--verbose', '2024-01-15',
         ])
         self.assertEqual(snapshot_mover.logger.level, logging.DEBUG)
+
+    def test_match_by_filename_flag_enables_filename_only_matching(self):
+        snapshot_mover.MATCH_BY_FILENAME_ONLY = False
+        self._make_dir('2024-01-15')
+        rc = snapshot_sealer.cli([
+            '--db', self.db_file, '--dest', self.dest_dir,
+            '--match-by-filename', '2024-01-15',
+        ])
+        self.assertEqual(rc, 0)
+        self.assertTrue(snapshot_mover.MATCH_BY_FILENAME_ONLY)
+
+    def test_match_by_filename_off_by_default(self):
+        snapshot_mover.MATCH_BY_FILENAME_ONLY = False
+        self._make_dir('2024-01-15')
+        snapshot_sealer.cli([
+            '--db', self.db_file, '--dest', self.dest_dir, '2024-01-15',
+        ])
+        self.assertFalse(snapshot_mover.MATCH_BY_FILENAME_ONLY)
 
 
 # ---------------------------------------------------------------------------
