@@ -45,7 +45,8 @@ TIER_TITLES = {
 }
 
 # kind: 'agent' = bootout + delete plist, 'path' = delete file/tree/symlink,
-# 'rmdir' = remove directory (already known to be left empty).
+# 'rmdir' = remove directory (already known to be left empty),
+# 'dated_log' = like 'path', but summarised as one line in the printed plan.
 Item = namedtuple('Item', 'tier kind path')
 
 
@@ -125,7 +126,7 @@ def build_plan(home, repo_root, purge_data, repo_artifacts):
         add(DATA, 'path', home / 'browser-visits-host.log')
         add(DATA, 'path', home / 'browser-visits-verifier.log')
         for p in sorted(home.glob('browser-visits-????-??-??.log')):
-            add(DATA, 'path', p)
+            add(DATA, 'dated_log', p)
     return plan
 
 
@@ -167,8 +168,14 @@ def _print_plan(plan, prefix):
         if items:
             print(f"{TIER_TITLES[tier]}:")
             for i in items:
-                note = ' (empty dir)' if i.kind == 'rmdir' else ''
-                print(f"  {prefix}{i.path}{note}")
+                if i.kind != 'dated_log':
+                    note = ' (empty dir)' if i.kind == 'rmdir' else ''
+                    print(f"  {prefix}{i.path}{note}")
+            dated = [i for i in items if i.kind == 'dated_log']
+            if dated:
+                pattern = dated[0].path.parent / 'browser-visits-YYYY-MM-DD.log'
+                s = '' if len(dated) == 1 else 's'
+                print(f"  {prefix}{len(dated)} dated log file{s}: {pattern}")
 
 
 def _print_followups(purge_data):
@@ -188,7 +195,8 @@ def _print_followups(purge_data):
 def _build_parser():
     p = argparse.ArgumentParser(
         prog='uninstall_laptop.py',
-        description='Remove the browser-visit-logger laptop install.')
+        description='Remove the browser-visit-logger laptop install.',
+        allow_abbrev=False)
     p.add_argument('-n', '--dry-run', action='store_true',
                    help='show what would be removed; change nothing')
     p.add_argument('-y', '--yes', action='store_true',

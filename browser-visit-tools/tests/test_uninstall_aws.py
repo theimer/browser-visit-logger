@@ -15,6 +15,36 @@ _fake_boto3 = types.ModuleType('boto3')
 _fake_boto3.client = lambda service, region_name=None: None
 sys.modules.setdefault('boto3', _fake_boto3)
 
+_fake_botocore = types.ModuleType('botocore')
+_fake_bce = types.ModuleType('botocore.exceptions')
+
+
+class BotoCoreError(Exception):
+    pass
+
+
+class NoCredentialsError(BotoCoreError):
+    pass
+
+
+class PartialCredentialsError(BotoCoreError):
+    pass
+
+
+class ClientError(Exception):
+    def __init__(self, error_response, operation_name):
+        super().__init__(str(error_response))
+        self.response = error_response
+        self.operation_name = operation_name
+
+
+for _c in (BotoCoreError, NoCredentialsError, PartialCredentialsError,
+           ClientError):
+    setattr(_fake_bce, _c.__name__, _c)
+_fake_botocore.exceptions = _fake_bce
+sys.modules.setdefault('botocore', _fake_botocore)
+sys.modules.setdefault('botocore.exceptions', _fake_bce)
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import manage_vm as mv  # noqa: E402
 import uninstall_aws as ua  # noqa: E402
@@ -592,3 +622,204 @@ def test_delete_bucket_error_is_reported_and_state_kept(monkeypatch, tmp_path,
     assert run(['--yes']) == 1
     assert (tmp_path / 'vm.json').exists()
     assert 'BucketNotEmpty' in capsys.readouterr().err
+
+
+# ------------------------------------------------- AWS error handling (main)
+
+def cerr(code, message='', op=None):
+    return ua.bce.ClientError({'Error': {'Code': code, 'Message': message}},
+                              op)
+
+
+def assert_one_error_line(capsys):
+    cap = capsys.readouterr()
+    lines = [line for line in cap.err.splitlines() if line.strip()]
+    assert len(lines) == 1 and lines[0].startswith('error:')
+    assert 'Traceback' not in cap.err + cap.out
+    return lines[0]
+
+
+def test_no_credentials_from_account_lookup(monkeypatch, capsys):
+    c = make()
+    c.sts._raises['get_caller_identity'] = ua.bce.NoCredentialsError()
+    patch(monkeypatch, c)
+    assert run(['--yes']) == 1
+    line = assert_one_error_line(capsys)
+    assert 'aws sso login' in line and 'AWS_PROFILE' in line
+    assert not [n for n in all_names(c) if n.startswith(MUTATING)]
+
+
+class SSOTokenLoadError(ua.bce.BotoCoreError):
+    pass
+
+
+@pytest.mark.parametrize('err', [
+    cerr('ExpiredToken', 'The security token included is expired', 'X'),
+    ua.bce.PartialCredentialsError(),
+    SSOTokenLoadError(),
+])
+def test_other_credential_triggers(monkeypatch, capsys, err):
+    c = make()
+    c.sts._raises['get_caller_identity'] = err
+    patch(monkeypatch, c)
+    assert run(['--yes']) == 1
+    line = assert_one_error_line(capsys)
+    assert 'aws sso login' in line and 'AWS_PROFILE' in line
+
+
+def test_credentials_error_from_client_factory(monkeypatch, capsys):
+    def factory(service, region=None):
+        raise ua.bce.NoCredentialsError()
+    monkeypatch.setattr(ua.aws, 'client', factory)
+    assert run(['--yes']) == 1
+    assert 'aws sso login' in assert_one_error_line(capsys)
+
+
+def test_access_denied_names_action_from_message(monkeypatch, capsys):
+    c = make(ec2_raises={'describe_instances': cerr(
+        'AccessDenied', 'User: arn:aws:iam::1:user/x is not authorized to '
+        'perform: ec2:DescribeInstances on resource: *', 'DescribeInstances')})
+    patch(monkeypatch, c)
+    assert run(['--yes']) == 1
+    line = assert_one_error_line(capsys)
+    assert 'ec2:DescribeInstances' in line and 'arn:' not in line
+
+
+def test_access_denied_falls_back_to_operation(monkeypatch, capsys):
+    c = make(ec2_raises={'describe_instances': cerr(
+        'UnauthorizedOperation', 'You are not authorized', 'DescribeInstances')})
+    patch(monkeypatch, c)
+    assert run(['--yes']) == 1
+    assert 'DescribeInstances' in assert_one_error_line(capsys)
+
+
+def test_access_denied_unknown_action(monkeypatch, capsys):
+    c = make(ec2_raises={'describe_instances': cerr('AccessDenied')})
+    patch(monkeypatch, c)
+    assert run(['--yes']) == 1
+    assert 'unknown action' in assert_one_error_line(capsys)
+
+
+def test_multiline_message_collapsed(monkeypatch, capsys):
+    c = make(ec2_raises={'describe_instances': cerr(
+        'Throttling', 'slow\ndown\n  please', 'DescribeInstances')})
+    patch(monkeypatch, c)
+    assert run(['--yes']) == 1
+    line = assert_one_error_line(capsys)
+    assert line == 'error: AWS call failed: Throttling: slow down please'
+
+
+def test_generic_botocore_error(monkeypatch, capsys):
+    c = make(ec2_raises={'describe_instances': ua.bce.BotoCoreError()})
+    patch(monkeypatch, c)
+    assert run(['--yes']) == 1
+    assert 'AWS call failed' in assert_one_error_line(capsys)
+
+
+def test_client_error_without_code(monkeypatch, capsys):
+    c = make(ec2_raises={'describe_instances': ua.bce.ClientError({}, 'Op')})
+    patch(monkeypatch, c)
+    assert run(['--yes']) == 1
+    assert 'AWS call failed' in assert_one_error_line(capsys)
+
+
+def test_read_failure_in_delete_bucket_is_caught_by_main(monkeypatch, capsys):
+    c = make()
+    calls = {'n': 0}
+
+    def ident(_kw):
+        calls['n'] += 1
+        if calls['n'] > 2:
+            raise ua.bce.NoCredentialsError()
+        return {'Account': ACCOUNT}
+    c.sts._returns['get_caller_identity'] = ident
+    patch(monkeypatch, c)
+    assert run(['--yes']) == 1
+    assert 'aws sso login' in assert_one_error_line(capsys)
+
+
+def test_mutating_client_error_still_recorded(monkeypatch, capsys, tmp_path):
+    c = make(iam_raises={'delete_role': cerr('AccessDenied', 'no', 'DeleteRole')})
+    patch(monkeypatch, c)
+    (tmp_path / 'vm.json').write_text('{}')
+    assert run(['--yes']) == 1
+    err = capsys.readouterr().err
+    assert 'IAM delete role' in err and '1 step(s) failed' in err
+    assert 'delete_bucket' in c.s3.names()
+    assert (tmp_path / 'vm.json').exists()
+
+
+# ------------------------------------------------------------- abbreviation
+
+@pytest.mark.parametrize('argv', [['--purge'], ['--dr'], ['--ye'],
+                                  ['--reg', 'us-west-2']])
+def test_abbreviated_flags_rejected(argv):
+    with pytest.raises(SystemExit) as ei:
+        ua.main(argv)
+    assert ei.value.code == 2
+
+
+def test_parser_disallows_abbrev_and_exact_flags_work():
+    p = ua._build_parser()
+    assert p.allow_abbrev is False
+    a = p.parse_args(['--region', 'r', '--dry-run', '--yes'])
+    assert (a.region, a.dry_run, a.yes) == ('r', True, True)
+    a = p.parse_args(['-n', '-y'])
+    assert a.dry_run and a.yes
+
+
+# --------------------------------------------------------------- plan wording
+
+PENDING = (f'unverified: S3 bucket {BUCKET} - lifecycle rule '
+           f'{ua.LIFECYCLE_RULE_ID} not yet checked; deleted only if present')
+
+
+def test_dry_plan_does_not_claim_bucket_removal_before_check(monkeypatch,
+                                                             capsys):
+    c = make()
+    patch(monkeypatch, c)
+    assert run(['-n']) == 0
+    out = capsys.readouterr().out
+    first = out.split('lifecycle rule bvl-expire-staging found')[0]
+    lines = [line for line in first.splitlines() if BUCKET in line]
+    assert lines and all('remove' not in line for line in lines)
+
+
+def test_pending_line_identical_in_dry_and_real(monkeypatch, capsys):
+    c = make()
+    patch(monkeypatch, c)
+    run(['-n'])
+    dry = set(capsys.readouterr().out.splitlines())
+    c = make()
+    patch(monkeypatch, c)
+    run(['--yes'])
+    real = set(capsys.readouterr().out.splitlines())
+    assert f'  {PENDING}' in dry and f'  {PENDING}' in real
+    assert not any('will remove: S3 bucket' in line for line in real)
+
+
+def test_dry_run_ours_prints_found_then_would_remove(monkeypatch, capsys):
+    c = make(ours=True)
+    patch(monkeypatch, c)
+    assert run(['-n']) == 0
+    out = capsys.readouterr().out
+    found = out.index('lifecycle rule bvl-expire-staging found')
+    assert found < out.index('would remove: S3 bucket')
+
+
+def test_not_ours_never_claims_removal(monkeypatch, capsys):
+    c = make(ours=False)
+    patch(monkeypatch, c)
+    assert run(['-n']) == 1
+    assert 'remove: S3 bucket' not in capsys.readouterr().out
+
+
+def test_bucket_only_deployment_still_prompts(monkeypatch, capsys):
+    c = make(instances=(), sg=(), role=False, profile=False)
+    patch(monkeypatch, c)
+    prompts = []
+    monkeypatch.setattr('builtins.input',
+                        lambda p: prompts.append(p) or ACCOUNT)
+    assert run() == 0
+    assert 'nothing to remove' not in capsys.readouterr().out
+    assert prompts
