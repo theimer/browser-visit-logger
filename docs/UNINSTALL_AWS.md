@@ -25,6 +25,14 @@ untagged security group with the same name is **not** ours and is left alone.
 A bucket without the `bvl-expire-staging` lifecycle rule is skipped and the
 run exits 1.
 
+The plan lists the bucket as `unverified`, not as something that "would
+remove": the lifecycle rule is only checked later, in the bucket step. The
+same `unverified` line is printed in dry and real runs. Only after the rule is
+found does the script print `bucket B: lifecycle rule bvl-expire-staging
+found`; a dry run then adds `would remove: S3 bucket B`, and a real run goes
+on to delete it. A bucket-only deployment still counts as something to do
+(no "nothing to remove", and the confirmation applies).
+
 ### Staging bucket contents
 
 The bucket holds copies of the server TLS private keys, the Drive
@@ -44,6 +52,10 @@ python3 uninstall_aws.py --region us-west-2
 | `-n`, `--dry-run` | Print the plan and make read-only calls only. |
 | `-y`, `--yes` | Skip the confirmation prompt. |
 
+Flags must be written in full: abbreviations such as `--dr`, `--ye`,
+`--reg` or `--purge` are rejected as unrecognized arguments (exit 2) so a
+prefix can never trigger a flag by accident.
+
 Always run `--dry-run` first. The output starts with the account ID and
 region the script is talking to.
 
@@ -56,10 +68,42 @@ the script exits 2.
 ### Exit codes
 
 - `0`: success, including "nothing to remove"
-- `1`: a step failed, or you declined the prompt
-- `2`: usage error (no region, or non-interactive without `--yes`)
+- `1`: a step failed, you declined the prompt, or an AWS error aborted the
+  run (see Error handling)
+- `2`: usage error (no region, non-interactive without `--yes`, or an unknown
+  or abbreviated flag; `-h` prints help and exits 0)
+
+## Error handling
+
+An AWS error never produces a traceback. It is reported as a single
+`error:` line on stderr and the script exits 1. This covers the account
+lookup, the initial scan and every other read-only call.
+
+- **Missing or expired credentials** (including an expired SSO session):
+  `error: AWS credentials are missing or expired; run 'aws sso login' and set
+  AWS_PROFILE, then retry`.
+- **Access denied**: `error: AWS access denied for ec2:DescribeInstances;
+  grant this permission and retry`. The action is taken from AWS's message
+  when it names one (`ec2:DescribeInstances`), otherwise it is the API
+  operation (`DescribeInstances`), otherwise `unknown action`. AWS's raw text
+  is not echoed.
+- **Any other AWS failure**: `error: AWS call failed: <code>: <message>`, with
+  the message collapsed onto one line.
+
+### Mutating steps: record and continue
+
+Failures in the mutating steps (terminate, delete security group, each IAM
+step, each bucket step) do not abort the run. Each failure is recorded as its
+own `error:` line and later steps still run. A failed terminate, or a
+terminate that times out, skips the security group step. At the end the script
+prints `N step(s) failed; state file kept` and exits 1. Read-only discovery
+calls are different: they abort with the single `error:` line above.
 
 ## Order of operations
+
+Before anything is changed the plan is printed (`will remove` / `would
+remove` for instances, security group, IAM and the state file; `unverified`
+for the bucket).
 
 1. Terminate all matching instances and wait for `terminated` (10 min timeout;
    on timeout the security group step is skipped).
@@ -68,7 +112,8 @@ the script exits 2.
    detach the SSM policy, delete role. Each step tolerates "already gone".
    Unknown extra policies are never force-detached; `DeleteConflict` is
    reported as a failure.
-4. Empty and delete the S3 bucket.
+4. Check the bucket's lifecycle rule; only if found, empty and delete the S3
+   bucket (a dry run prints `would remove` here instead).
 5. Delete `vm.json`, only if every step succeeded.
 
 Run this **before** `uninstall_laptop.py --purge-data`, which deletes

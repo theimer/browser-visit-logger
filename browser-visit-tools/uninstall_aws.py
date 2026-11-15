@@ -12,14 +12,18 @@ never guessed.  The caller must type the AWS account ID to confirm
 (or pass --yes).  --dry-run makes read-only calls only.
 
 Exit codes: 0 success / nothing to remove, 1 a step failed or user
-declined, 2 usage error (no region, or non-interactive without --yes).
+declined or an AWS error aborted the run (one 'error:' line, no
+traceback), 2 usage error (no region, non-interactive without --yes, or an
+unknown/abbreviated flag).
 """
 
 import argparse
+import re
 import sys
 import time
 
 import _bvl_aws as aws
+from botocore import exceptions as bce
 
 SSM_CORE_POLICY_ARN = 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
 INLINE_POLICY_NAME = 'bvl-deploy-bucket-read'
@@ -31,6 +35,40 @@ _TAG_FILTERS = [
     {'Name': f'tag:{aws.TAG_ROLE[0]}', 'Values': [aws.TAG_ROLE[1]]},
 ]
 _DELETE_BATCH = 1000
+
+# Credential problems are matched by class name over the MRO so that older
+# botocore versions without some of these classes still import cleanly.
+_CRED_ERRORS = ('NoCredentialsError', 'PartialCredentialsError',
+                'CredentialRetrievalError', 'TokenRetrievalError',
+                'SSOTokenLoadError', 'UnauthorizedSSOTokenError')
+_CRED_CODES = ('ExpiredToken', 'ExpiredTokenException', 'RequestExpired',
+               'InvalidClientTokenId', 'UnrecognizedClientException',
+               'AuthFailure', 'InvalidAccessKeyId')
+_DENIED_CODES = ('AccessDenied', 'AccessDeniedException',
+                 'UnauthorizedOperation')
+_ACTION_RE = re.compile(r'perform: ([A-Za-z0-9-]+:[A-Za-z0-9*]+)')
+
+
+def _aws_error_message(e):
+    """One-line 'error: ...' text for a botocore error."""
+    code = aws.error_code(e)
+    if (any(c.__name__ in _CRED_ERRORS for c in type(e).__mro__)
+            or code in _CRED_CODES):
+        return ("error: AWS credentials are missing or expired; run "
+                "'aws sso login' and set AWS_PROFILE, then retry")
+    if code in _DENIED_CODES:
+        msg = e.response.get('Error', {}).get('Message') or ''
+        m = _ACTION_RE.search(msg)
+        action = (m.group(1) if m else getattr(e, 'operation_name', None)
+                  or 'unknown action')
+        text = (f"error: AWS access denied for {action}; "
+                f"grant this permission and retry")
+    elif code is not None:
+        msg = e.response['Error'].get('Message', '')
+        text = f"error: AWS call failed: {code}: {msg}"
+    else:
+        text = f"error: AWS call failed: {e}"
+    return ' '.join(text.split())
 
 
 class Results:
@@ -96,8 +134,10 @@ def _is_ours(s3, bucket):
 
 
 def build_plan(ec2, iam, s3, sts, region):
-    """Human-readable list of resources that currently exist."""
+    """Return (removals, pending): resources that exist, and the bucket,
+    whose lifecycle rule is only verified later in delete_bucket."""
     plan = []
+    pending = []
     for iid in _live_instance_ids(ec2):
         plan.append(f"EC2 instance {iid}")
     for gid in _security_groups(ec2):
@@ -109,10 +149,12 @@ def build_plan(ec2, iam, s3, sts, region):
         plan.append(f"IAM instance profile {aws.PROFILE_NAME}")
     bucket = aws.staging_bucket_name(sts, region)
     if _bucket_exists(s3, bucket):
-        plan.append(f"S3 bucket {bucket} (all objects and versions)")
+        pending.append(
+            f"S3 bucket {bucket} - lifecycle rule {LIFECYCLE_RULE_ID} "
+            f"not yet checked; deleted only if present")
     if aws.state_path().exists():
         plan.append(f"state file {aws.state_path()}")
-    return plan
+    return plan, pending
 
 
 def terminate_instances(ec2, dry_run, results, sleep=time.sleep,
@@ -219,7 +261,10 @@ def delete_bucket(s3, sts, region, dry_run, results):
         results.fail(f"bucket {bucket} lacks lifecycle rule "
                      f"{LIFECYCLE_RULE_ID}; it is not ours - SKIPPED")
         return
+    print(f"bucket {bucket}: lifecycle rule {LIFECYCLE_RULE_ID} found")
     if dry_run:
+        print(f"  would remove: S3 bucket {bucket} "
+              f"(all objects and versions)")
         return
     try:
         for batch in _version_batches(s3, bucket):
@@ -248,7 +293,8 @@ def _resolve_region(arg_region):
 def _build_parser():
     p = argparse.ArgumentParser(
         prog='uninstall_aws.py',
-        description='Tear down the browser-visit-logger AWS infrastructure.')
+        description='Tear down the browser-visit-logger AWS infrastructure.',
+        allow_abbrev=False)
     p.add_argument('--region', help='AWS region (else BVL_AWS_REGION, '
                    'else the state file)')
     p.add_argument('-n', '--dry-run', action='store_true',
@@ -271,14 +317,16 @@ def run(args):
     iam = aws.client('iam', region)
     s3 = aws.client('s3', region)
 
-    plan = build_plan(ec2, iam, s3, sts, region)
-    if not plan:
+    plan, pending = build_plan(ec2, iam, s3, sts, region)
+    if not plan and not pending:
         print("nothing to remove")
         return 0
     dry = args.dry_run
     prefix = 'would remove' if dry else 'will remove'
     for line in plan:
         print(f"  {prefix}: {line}")
+    for line in pending:
+        print(f"  unverified: {line}")
 
     if not dry and not args.yes:
         try:
@@ -318,6 +366,10 @@ def main(argv):
         return run(args)
     except (RuntimeError, TimeoutError) as e:
         print(f"error: {e}", file=sys.stderr)
+        return 1
+    except (bce.ClientError, bce.BotoCoreError,
+            bce.NoCredentialsError) as e:
+        print(_aws_error_message(e), file=sys.stderr)
         return 1
 
 

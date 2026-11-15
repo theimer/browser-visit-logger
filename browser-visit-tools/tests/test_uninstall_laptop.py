@@ -282,3 +282,67 @@ def test_bvl_env_paths_are_ignored(env, monkeypatch, tmp_path):
     monkeypatch.setenv('BVL_DB_FILE', str(db))
     assert ul.main(['--yes', '--purge-data']) == 0
     assert cfg.exists() and db.exists()
+
+
+@pytest.mark.parametrize('flag', ['--purge', '--purge-d', '--repo',
+                                  '--repo-art', '--dry', '--ye'])
+def test_abbreviated_flags_rejected(env, flag):
+    make_tree(env.home, env.repo)
+    before = (snapshot(env.home), snapshot(env.repo))
+    with pytest.raises(SystemExit) as exc:
+        ul.main([flag])
+    assert exc.value.code == 2
+    assert (snapshot(env.home), snapshot(env.repo)) == before
+    assert env.launchctl == []
+
+
+def test_parser_disallows_abbrev():
+    parser = ul._build_parser()
+    assert parser.allow_abbrev is False
+    assert parser.parse_args(['--purge-data']).purge_data is True
+
+
+def _dated_logs(home, days=('02', '03', '04')):
+    return [_touch(home / f'browser-visits-2025-01-{d}.log') for d in days]
+
+
+def test_dated_logs_collapsed_in_plan(env, capsys):
+    _dated_logs(env.home)
+    _touch(env.home / 'browser-visits-notes.log')
+    assert ul.main(['-n', '--purge-data']) == 0
+    out = capsys.readouterr().out
+    assert '3 dated log files' in out
+    assert 'browser-visits-YYYY-MM-DD.log' in out
+    assert 'browser-visits-2025-' not in out
+    plan = ul.build_plan(env.home, env.repo, True, False)
+    assert sum(i.kind == 'dated_log' for i in plan) == 3
+
+
+def test_dry_run_and_real_plan_agree(env, capsys):
+    make_tree(env.home, env.repo)
+    _dated_logs(env.home)
+    plan = ul.build_plan(env.home, env.repo, True, True)
+    ul._print_plan(plan, '')
+    real = capsys.readouterr().out
+    ul._print_plan(plan, 'would remove ')
+    dry = capsys.readouterr().out
+    assert dry.replace('would remove ', '') == real
+
+
+def test_single_dated_log_singular(env, capsys):
+    _dated_logs(env.home, days=('02',))
+    assert ul.main(['-n', '--purge-data']) == 0
+    out = capsys.readouterr().out
+    assert '1 dated log file:' in out
+    assert '1 dated log files' not in out
+
+
+def test_each_dated_log_removed_individually(env, capsys):
+    logs = _dated_logs(env.home)
+    notes = _touch(env.home / 'browser-visits-notes.log')
+    assert ul.main(['--yes', '--purge-data']) == 0
+    out = capsys.readouterr().out
+    assert not any(p.exists() for p in logs)
+    assert notes.exists()
+    assert sum(l.startswith('removed ') and 'browser-visits-2025-' in l
+               for l in out.splitlines()) == 3
