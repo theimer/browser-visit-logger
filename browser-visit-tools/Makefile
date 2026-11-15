@@ -24,6 +24,7 @@ test: venv
 		--cov=reading_list --cov=db_diff --cov=fetch_vm_snapshot \
 		--cov=enroll_machine --cov=migrate_icloud_to_gdrive \
 		--cov=_bvl_aws --cov=manage_vm --cov=manage_sync_server \
+		--cov=uninstall_aws --cov=uninstall_laptop \
 		--cov-report=term-missing --cov-fail-under=100
 
 clean:
